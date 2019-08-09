@@ -1,0 +1,23 @@
+[package]
+name = "psn_api_rs"
+version = "0.1.0"
+authors = ["fakeshadow <24548779@qq.com>"]
+edition = "2018"
+description = "A simple PSN Network API wrapper"
+keywords = ["game", "playstation", "psn"]
+license = "MIT"
+
+[lib]
+name = "psn_api_rs"
+path = "src/lib.rs"
+
+[features]
+default = ["awc"]
+no-client = []
+
+[dependencies]
+awc = { version ="0.2.3", features = ["rust-tls"] , optional = true}
+derive_more = "0.14.1"
+futures = "0.1.28"
+serde = "1.0.98"
+serde_derive = "1.0.98"
