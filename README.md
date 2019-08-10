@@ -9,4 +9,6 @@
 *. This crate use actix_web_client as http client connecting to PSN network.<br>
 *. If you want to use another http client. You could add `features = ["no-client"]` in `cargo.toml` and use the trait crate provide and impl it to your preferred http client<br>
 
-
+#####Known limitaion:
+Performance could be really bad when running on some windows system. 
+      

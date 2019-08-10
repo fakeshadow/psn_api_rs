@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 use futures::Future;
 
 use derive_more::Display;
+use serde::de::DeserializeOwned;
 
 #[cfg(feature = "awc")]
 #[macro_use]
 extern crate serde_derive;
-
 
 /// A simple PSN API wrapper. It only uses a http client(actix-web-client in this case) to communicate wih the official PSN API.
 //  ToDo: You can use MakeClientCall trait to impl your own http client.(Check the trait description)
@@ -25,51 +25,24 @@ extern crate serde_derive;
 
 /// Example:
 ///``` rust
-///use std::io::stdin;
-///
-///use futures::{lazy, Future};
+///use futures::lazy;
 ///
 ///use tokio::runtime::current_thread::Runtime;
-///use tokio::prelude::*;
-///use psn_api_rs::{MakeClientCall, PSN, PSNUser};
+///use psn_api_rs::{PSNRequest, PSN, PSNUser};
 ///
 ///fn main() {
-///    println!(
-///        "Pleas input your refresh_token if you alreayd have one. Press enter to skip to next\r\n"
-///    );
-///   let mut refresh_token = String::new();
-///    let mut uuid = String::new();
-///    let mut two_step = String::new();
-///
-///    stdin().read_line(&mut refresh_token).unwrap();
-///
-///    trim(&mut refresh_token);
-///
-///    if refresh_token.len() == 0 {
-///        println!("Please input your uuid and press enter to continue.\r\n
-///You can check this link below to see how to get one paired with a two_step code which will be needed later\r\n
-///https://tusticles.com/psn-php/first_login.html\r\n");
-///
-///        stdin().read_line(&mut uuid).unwrap();
-///        trim(&mut uuid);
-///
-///        println!("Please input your two_step code to continue.\r\n");
-///
-///        stdin().read_line(&mut two_step).unwrap();
-///        trim(&mut two_step);
-///    }
-///
-///    println!("Please wait for the PSN network to response. The program will panic if there is an error occur\r\n");
-///
+///    let refresh_token = String::from("your refresh token");
+///    let uuid = String::from("your uuid");
+///    let two_step = String::from("your two_step code");
 ///
 ///    let mut runtime = Runtime::new().unwrap();
 ///
 ///    // construct and a new PSN,add credentials and call auth to generate tokens.
-///    let psn: PSN = runtime.block_on(lazy(|| {
+///    let mut psn: PSN = runtime.block_on(lazy(|| {
 ///        PSN::new()
-///            .refresh_token(refresh_token)   // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
-///            .uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
-///            .two_step(two_step)
+///            .add_refresh_token(refresh_token)   // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
+///            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
+///            .add_two_step(two_step)
 ///            .auth()
 ///    })).unwrap_or_else(|e| panic!("{:?}", e));
 ///
@@ -79,7 +52,7 @@ extern crate serde_derive;
 ///    );
 ///
 ///    let user: PSNUser = runtime.block_on(
-///        psn.get_user_profile("Hakoom")  // <- use the psn struct to call for user_profile.
+///        psn.add_online_id("Hakoom".to_owned()).get_profile()  // <- use the psn struct to call for user_profile.
 ///    ).unwrap_or_else(|e| panic!("{:?}", e));
 ///
 ///    println!(
@@ -88,15 +61,6 @@ extern crate serde_derive;
 ///    );
 ///
 ///    // psn struct is dropped at this point so it's better to store your access_token and refresh_token here to make them reusable.
-///}
-///
-///fn trim(s: &mut String) {
-///    if s.ends_with("\n") {
-///        s.pop();
-///        if s.ends_with("\r") {
-///            s.pop();
-///        }
-///    }
 ///}
 ///```
 
@@ -119,13 +83,13 @@ pub const OAUTH_TOKEN_ENTRY: &'static str =
 const USERS_API: &'static str =
     "https://hk-prof.np.community.playstation.net/userProfile/v1/users/";
 
-//const USER_TROPHY_API: &'static str =
-//    "https://hk-tpy.np.community.playstation.net/trophy/v1/trophyTitles";
+const USER_TROPHY_API: &'static str =
+    "https://hk-tpy.np.community.playstation.net/trophy/v1/trophyTitles/";
+
 //const ACTIVITY_API: &'static str = "https://activity.api.np.km.playstation.net/activity/api/";
 //const MESSAGE_THREAD_API: &'static str =
 //    "https://hk-gmsg.np.community.playstation.net/groupMessaging/v1/";
 //const STORE_API: &'static str = "https://store.playstation.com/valkyrie-api/";
-//const REDIRECTURI: &'static str = "com.playstation.PlayStationApp://redirect";
 
 const CLIENT_ID: &'static str = "b7cbf451-6bb6-4a5a-8913-71e61f462787";
 const CLIENT_SECRET: &'static str = "zsISsjmCx85zgCJg";
@@ -139,26 +103,18 @@ pub struct PSN {
     two_step: Option<String>,
     refresh_token: Option<String>,
     last_refresh_at: Option<Instant>,
+    /// the displayed online_id of PSN user. used to query user's info.
+    online_id: Option<String>,
+    /// np_id is PSN user's real unique id as online_id can be changed so it's best to use this as user identifier.
+    np_id: Option<String>,
+    /// np_communication_id is PSN game's identifier. Can be obtained by getting user's game summary API.(Only the games the target user have played will return)
+    np_communication_id: Option<String>,
+    language: Option<String>,
 }
 
-#[cfg(feature = "awc")]
-#[derive(Deserialize)]
-struct Npsso {
-    npsso: String,
-}
-
-#[cfg(feature = "awc")]
-#[derive(Deserialize)]
-struct Tokens {
-    access_token: Option<String>,
-    refresh_token: Option<String>,
-}
-
-#[cfg(feature = "awc")]
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PSNUser {
-    //    pub trophyList: Vec<PSNGame>,
     pub online_id: String,
     pub np_id: String,
     pub region: String,
@@ -166,21 +122,95 @@ pub struct PSNUser {
     pub about_me: String,
     pub languages_used: Vec<String>,
     pub plus: u8,
-//    pub trophy_summary: TrophySummary
-//    type: 'object',
-//    properties: {
-//    level: {
-//    type: 'number'
-//    },
-//    progress: {
-//    type: 'number'
-//    },
-//    earnedTrophies: earnedTrophiesObject
-//    }
-//    },
+    pub trophy_summary: PSNUserTrophySummary,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PSNUserTrophySummary {
+    level: u8,
+    progress: u8,
+    earned_trophies: EarnedTrophies,
+}
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrophyTitles {
+    pub total_results: u32,
+    pub offset: u32,
+    pub trophy_titles: Vec<TrophyTitle>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrophyTitle {
+    /// trophy title struct skip a lot of response fields. If you need a more detailed trophy title response.
+    /// You could use your own struct. Typical Torphy Title fields are:
+    /// ```rust
+    /// use psn_api_rs::{EarnedTrophies, TitleDetail};
+    /// struct ExampleTrophyTitle {
+    ///    //use camelcase as this is a copy paste from response json.
+    ///    npCommunicationId: String,
+    ///    trophyTitleName: String,
+    ///    trophyTitleDetail: String,
+    ///    trophyTitleIconUrl: String,
+    ///    trophyTitlePlatfrom: String,
+    ///    hasTrophyGroups: bool,
+    ///    definedTrophies: EarnedTrophies,
+    ///    comparedUser: TitleDetail
+    /// }
+    /// ```
+    pub np_communication_id: String,
+    #[serde(alias = "comparedUser")]
+    pub title_detail: TitleDetail,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TitleDetail {
+    pub progress: u8,
+    pub earned_trophies: EarnedTrophies,
+    pub last_update_date: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct EarnedTrophies {
+    pub platinum: u32,
+    pub gold: u32,
+    pub silver: u32,
+    pub bronze: u32,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrophySet {
+    pub trophies: Vec<Trophy>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Trophy {
+    trophy_id: u8,
+    trophy_hidden: bool,
+    trophy_type: Option<String>,
+    trophy_name: Option<String>,
+    trophy_detail: Option<String>,
+    trophy_icon_url: Option<String>,
+    trophy_rare: u8,
+    trophy_earned_rate: String,
+    #[serde(alias = "comparedUser")]
+    user_info: TrophyUser,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrophyUser {
+    online_id: String,
+    earned: bool,
+    earned_date: Option<String>,
+}
+
+#[cfg(feature = "awc")]
 #[derive(Debug, Display)]
 pub enum PSNError {
     #[display(fmt = "No Access Token is found. Please login in first")]
@@ -205,41 +235,72 @@ impl PSN {
             two_step: None,
             refresh_token: None,
             last_refresh_at: None,
+            online_id: None,
+            np_id: None,
+            np_communication_id: None,
+            language: Some("en".to_owned()),
         }
     }
 
-    pub fn refresh_token(mut self, refresh_token: String) -> Self {
+    pub fn add_refresh_token(mut self, refresh_token: String) -> Self {
         self.refresh_token = Some(refresh_token);
         self
     }
 
-    pub fn uuid(mut self, uuid: String) -> Self {
+    pub fn add_uuid(mut self, uuid: String) -> Self {
         self.uuid = Some(uuid);
         self
     }
 
-    pub fn two_step(mut self, two_step: String) -> Self {
+    pub fn add_two_step(mut self, two_step: String) -> Self {
         self.two_step = Some(two_step);
         self
     }
 
-    pub fn get_access_token(&self) -> Result<&str, PSNError> {
-        self.access_token
-            .as_ref()
-            .map(String::as_str)
-            .ok_or(PSNError::NoAccessToken)
+    /// determine the response language from PSN APIs. Will return English if not set.
+    pub fn add_language(mut self, region: String) -> Self {
+        self.language = Some(region);
+        self
+    }
+
+    pub fn add_online_id(&mut self, online_id: String) -> &mut Self {
+        self.online_id = Some(online_id);
+        self
+    }
+
+    pub fn add_np_id(&mut self, np_id: String) -> &mut Self {
+        self.np_id = Some(np_id);
+        self
+    }
+
+    pub fn add_np_communication_id(&mut self, np_communication_id: String) -> &mut Self {
+        self.np_communication_id = Some(np_communication_id);
+        self
+    }
+
+    /// check if it's about time the access_token expires.
+    pub fn should_refresh(&self) -> bool {
+        if Instant::now().duration_since(self.last_refresh_at.unwrap_or(Instant::now()))
+            > Duration::from_secs(3000)
+        {
+            true
+        } else {
+            false
+        }
     }
 }
 
-/// You can override MakeClientCall trait to impl your preferred http client
+/// You can override PSNRequest trait to impl your preferred http client
 ///
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
 
-pub trait MakeClientCall
-    where
-        Self: Sized + 'static,
+pub trait PSNRequest
+where
+    Self: Sized + EncodeUrl + 'static,
 {
-    fn auth(self) -> Box<dyn Future<Item=PSN, Error=PSNError>> {
+    type Error;
+
+    fn auth(self) -> Box<dyn Future<Item = PSN, Error = Self::Error>> {
         Box::new(
             self.gen_access_from_refresh()
                 .or_else(|(_, p)| p.gen_access_and_refresh())
@@ -248,18 +309,45 @@ pub trait MakeClientCall
     }
 
     /// This method will use uuid and two_step to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, Self)>>;
+    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
 
     /// This method will use local refresh_token to get a new access_token from PSN.
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, Self)>>;
+    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
 
-    #[cfg(feature = "awc")]
-    fn get_user_profile(&self, username: &str) -> Box<dyn Future<Item=PSNUser, Error=PSNError>>;
+    /// A general http get handle function. The return type T need to impl serde::deserialize.
+    fn get_by_url_encode<T: serde::de::DeserializeOwned + 'static>(
+        &self,
+        url: &str,
+    ) -> Box<dyn Future<Item = T, Error = Self::Error>>;
+
+    /// need to add_online_id before call this method.
+    fn get_profile<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+    {
+        self.get_by_url_encode(self.profile_encode().as_str())
+    }
+
+    /// need to add_online_id and give a legit offset(offset can't be larger than the total trophy lists a user have).
+    fn get_titles<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+    {
+        self.get_by_url_encode(self.trophy_summary_encode(offset).as_str())
+    }
+
+    /// need to add_online_id and add_np_communication_id before call this method.
+    fn get_trophy_set<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+    {
+        self.get_by_url_encode(self.trophy_set_encode().as_str())
+    }
 }
 
 #[cfg(feature = "awc")]
 impl PSN {
-    fn make_client() -> awc::Client {
+    fn http_client() -> awc::Client {
         awc::Client::build()
             .connector(
                 awc::Connector::new()
@@ -272,11 +360,12 @@ impl PSN {
 }
 
 #[cfg(feature = "awc")]
-impl MakeClientCall for PSN {
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, PSN)>> {
+impl PSNRequest for PSN {
+    type Error = PSNError;
+    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
         Box::new(
-            // User uuid and two_step code to make a call.
-            PSN::make_client()
+            /// User uuid and two_step code to make a post call.
+            PSN::http_client()
                 .post(NP_SSO_ENTRY)
                 .send_form(&self.np_sso_url_encode())
                 .then(|r| match r {
@@ -284,18 +373,18 @@ impl MakeClientCall for PSN {
                     Err(_) => Err((PSNError::NetWork, self)),
                 })
                 .and_then(|(mut res, psn)| {
-                    // At this point the uuid and two_step code are consumed and can't be used anymore.
-                    // If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
+                    /// At this point the uuid and two_step code are consumed and can't be used anymore.
+                    /// If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
 
-                    // Extract the npsso cookie as string from the response json body.
+                    /// Extract the npsso cookie as string from the response json body.
                     res.json().then(|r: Result<Npsso, _>| match r {
                         Ok(n) => Ok((n, psn)),
                         Err(_) => Err((PSNError::NoNPSSO, psn)),
                     })
                 })
                 .and_then(|(t, psn)| {
-                    // Use the npsso we get as a cookie header in a get call.
-                    PSN::make_client()
+                    /// Use the npsso we get as a cookie header in a get call.
+                    PSN::http_client()
                         .get(GRANT_CODE_ENTRY)
                         .header("Cookie", format!("npsso={}", t.npsso))
                         .header(
@@ -309,15 +398,15 @@ impl MakeClientCall for PSN {
                         })
                 })
                 .and_then(|(res, psn)| {
-                    // Extract the "x-np-grant-code" from the response header and parse it to string.
+                    /// Extract the "x-np-grant-code" from the response header and parse it to string.
                     match res.headers().get("x-np-grant-code") {
                         Some(h) => Ok((h.to_str().unwrap().to_owned(), psn)),
                         None => Err((PSNError::NoGrantCode, psn)),
                     }
                 })
                 .and_then(|(grant, psn)| {
-                    // Use the grant code to make another post call to finish the authentication process.
-                    PSN::make_client()
+                    /// Use the grant code to make another post call to finish the authentication process.
+                    PSN::http_client()
                         .post(OAUTH_TOKEN_ENTRY)
                         .send_form(&PSN::oauth_token_encode(grant))
                         .then(|r| match r {
@@ -325,63 +414,78 @@ impl MakeClientCall for PSN {
                             Err(_) => Err((PSNError::NetWork, psn)),
                         })
                 })
-                .and_then(|(mut res, mut p)| {
-                    // Extract the access_token and refresh_token from the response body json.
+                .and_then(|(mut res, mut psn)| {
+                    /// Extract the access_token and refresh_token from the response body json.
                     res.json().then(|r: Result<Tokens, _>| match r {
                         Ok(t) => {
-                            p.access_token = t.access_token;
-                            p.refresh_token = t.refresh_token;
-                            Ok(p)
+                            psn.last_refresh_at = Some(Instant::now());
+                            psn.access_token = t.access_token;
+                            psn.refresh_token = t.refresh_token;
+                            Ok(psn)
                         }
-                        Err(_) => Err((PSNError::Tokens, p)),
+                        Err(_) => Err((PSNError::Tokens, psn)),
                     })
                 }),
         )
     }
 
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, PSN)>> {
+    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
         Box::new(
-            PSN::make_client()
+            /// Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
+            /// We only need the new access token from response.(refresh token can't be refreshed.)
+            PSN::http_client()
                 .post(OAUTH_TOKEN_ENTRY)
                 .send_form(&self.oauth_token_refresh_encode())
                 .then(|r| match r {
                     Ok(r) => Ok((r, self)),
-                    Err(_) => Err((PSNError::NetWork, self))
+                    Err(_) => Err((PSNError::NetWork, self)),
                 })
                 .and_then(|(mut res, mut psn)| {
                     res.json().then(|r: Result<Tokens, _>| match r {
                         Ok(t) => {
+                            psn.last_refresh_at = Some(Instant::now());
                             psn.access_token = t.access_token;
                             Ok(psn)
                         }
                         Err(_) => Err((PSNError::Tokens, psn)),
                     })
-                })
-            ,
+                }),
         )
     }
 
-    #[cfg(feature = "awc")]
-    fn get_user_profile(&self, online_id: &str) -> Box<dyn Future<Item=PSNUser, Error=PSNError>> {
+    fn get_by_url_encode<T>(&self, url: &str) -> Box<dyn Future<Item = T, Error = PSNError>>
+    where
+        T: serde::de::DeserializeOwned + 'static,
+    {
         Box::new(
-            PSN::make_client()
-                .get(PSN::user_profile_encode(online_id))
-                .header(
-                    awc::http::header::CONTENT_TYPE,
-                    "application/json",
-                )
+            /// The access_token is used as bearer token and content type header need to be application/json.
+            PSN::http_client()
+                .get(url)
+                .header(awc::http::header::CONTENT_TYPE, "application/json")
                 .bearer_auth(self.access_token.as_ref().unwrap())
                 .send()
                 .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    res.json().map_err(|_| PSNError::PayLoad).map(|r: PSNUser| r)
-                })
+                .and_then(|mut res| res.json().map_err(|_| PSNError::PayLoad)),
         )
     }
 }
 
-impl PSN {
-    pub fn np_sso_url_encode(&self) -> [(&'static str, String); 4] {
+pub trait EncodeUrl {
+    fn np_sso_url_encode(&self) -> [(&'static str, String); 4];
+
+    fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6];
+
+    fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7];
+
+    fn profile_encode(&self) -> String;
+
+    fn trophy_summary_encode(&self, offset: u32) -> String;
+
+    fn trophy_set_encode(&self) -> String;
+}
+
+impl EncodeUrl for PSN {
+    fn np_sso_url_encode(&self) -> [(&'static str, String); 4] {
         let uuid = self
             .uuid
             .as_ref()
@@ -395,8 +499,9 @@ impl PSN {
 
         /// serde_urlencoded can be used to make a `application/x-wwww-url-encoded` `String` buffer from form
         /// the same applies to all self.XXX_url_encode() and Self::XXX_url_encode methods.
+        /// example if your http client don't support auto urlencode convert.
         /// ```rust
-        /// use psn_api_rs::PSN;
+        /// use psn_api_rs::{PSN, EncodeUrl};
         /// use serde_urlencoded;
         /// impl PSN {
         ///     fn url_query_string(&self) -> String {
@@ -412,7 +517,7 @@ impl PSN {
         ]
     }
 
-    pub fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6] {
+    fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6] {
         [
             ("client_id", CLIENT_ID.to_owned()),
             ("client_secret", CLIENT_SECRET.to_owned()),
@@ -423,7 +528,7 @@ impl PSN {
         ]
     }
 
-    pub fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7] {
+    fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7] {
         [
             ("app_context", "inapp_ios".to_owned()),
             ("client_id", CLIENT_ID.to_owned()),
@@ -432,13 +537,54 @@ impl PSN {
             ("scope", SCOPE.to_owned()),
             (
                 "refresh_token",
-                self.refresh_token.as_ref().map(String::as_str).unwrap_or("lazy uncheck").to_owned(),
+                self.refresh_token
+                    .as_ref()
+                    .map(String::as_str)
+                    .unwrap_or("lazy uncheck")
+                    .to_owned(),
             ),
             ("grant_type", "refresh_token".to_owned()),
         ]
     }
 
-    pub fn user_profile_encode(online_id: &str) -> String {
-        format!("{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary", USERS_API, online_id)
+    fn profile_encode(&self) -> String {
+        format!(
+            "{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary",
+            USERS_API,
+            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
+        )
     }
+
+    fn trophy_summary_encode(&self, offset: u32) -> String {
+        format!(
+            "{}?fields=%40default&npLanguage={}&iconSize=m&platform=PS3,PSVITA,PS4&offset={}&limit=100&comparedUser={}",
+            USER_TROPHY_API,
+            self.language.as_ref().map(String::as_str).unwrap(),
+            offset,
+            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
+        )
+    }
+
+    fn trophy_set_encode(&self) -> String {
+        format!(
+            "{}{}/trophyGroups/all/trophies?fields=%40default,trophyRare,trophyEarnedRate&npLanguage={}&comparedUser={}",
+            USER_TROPHY_API,
+            self.np_communication_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck"),
+            self.language.as_ref().map(String::as_str).unwrap(),
+            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
+        )
+    }
+}
+
+#[cfg(feature = "awc")]
+#[derive(Deserialize)]
+struct Npsso {
+    npsso: String,
+}
+
+#[cfg(feature = "awc")]
+#[derive(Deserialize)]
+struct Tokens {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
 }
