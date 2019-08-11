@@ -2,13 +2,27 @@
 
 #### This is a working in progress. It have very limit API functions for now.
 
+<br>
+
 #### Usage:
-`Used to communicate with PSN network API.`<br>
+add `psn_api_rs = { git = "https://github.com/fakeshadow/psn_api_rs" features = ["client"]}`  to cargo.toml.<br>  
+remove `features = ["client"]` if you don't want to use build in http client.(See more in documentation)
+
+<br>
 
 #### Features:
-*. This crate use actix_web_client as http client connecting to PSN network.<br>
-*. If you want to use another http client. You could add `features = ["no-client"]` in `cargo.toml` and use the trait crate provide and impl it to your preferred http client<br>
+Use actix-web-client as http client connecting to PSN network.<br>
+Get psn user profile, trophies, games info <br>
+Receive/send PSN messages.(ToDo) <br>
+Get PSN store info.(ToDo)
 
-#####Known limitaion:
+<br>
+
+#### Documentation:
+please use `cargo doc` for now.
+
+<br>
+
+##### Known limitaion:
 Performance could be really bad when running on some windows system. 
-      
+           
