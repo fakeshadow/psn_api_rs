@@ -52,10 +52,11 @@
 
 use std::time::{Duration, Instant};
 
-use futures::Future;
+use futures::{Future, future::{ok, Either}};
 
 use derive_more::Display;
 use serde::de::DeserializeOwned;
+
 use crate::models::MessageDetail;
 
 #[cfg(feature = "awc")]
@@ -324,8 +325,8 @@ pub enum PSNError {
     NoGrantCode,
     #[display(fmt = "Can not extract access and/or refresh token(s) from response body")]
     Tokens,
-    #[display(fmt = "Can not post data to PSN APIs")]
-    PostData,
+    #[display(fmt = "Error from PSN response: {}", _0)]
+    FromPSN(String),
 }
 
 impl PSN {
@@ -414,7 +415,7 @@ impl PSN {
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
 pub trait PSNRequest
     where
-        Self: Sized + EncodeUrl + 'static,
+        Self: Sized + EncodeUrl + MultiPart + 'static,
 {
     type Error;
 
@@ -437,6 +438,9 @@ pub trait PSNRequest
         &self,
         url: &str,
     ) -> Box<dyn Future<Item=T, Error=Self::Error>>;
+
+    /// A generic http del handle function. return status 204 as successful response.
+    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item=(), Error=Self::Error>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
@@ -504,10 +508,16 @@ pub trait PSNRequest
         self.post_by_multipart(boundary.as_str(), self.generate_thread_encode().as_str(), body)
     }
 
-    fn send_text_message(&self, msg: &str, thread_id: &str) -> Box<dyn Future<Item=(), Error=Self::Error>> {
+    fn leave_message_thread(&self, thread_id: &str) -> Box<dyn Future<Item=(), Error=Self::Error>> {
+        self.del_by_url_encode(self.leave_message_thread_encode(thread_id).as_str())
+    }
+
+    /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
+    /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
+    fn send_message(&self, msg: Option<&str>, path: Option<&str>, thread_id: &str) -> Box<dyn Future<Item=(), Error=Self::Error>> {
         let boundary = Self::generate_boundary();
         let url = self.send_message_encode(thread_id);
-        let body = self.message_multipart_body(boundary.as_str(), Some(msg), None);
+        let body = self.message_multipart_body(boundary.as_str(), msg, path);
 
         self.post_by_multipart(boundary.as_str(), url.as_str(), body)
     }
@@ -533,7 +543,7 @@ impl PSNRequest for PSN {
     type Error = PSNError;
     fn gen_access_and_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, PSN)>> {
         Box::new(
-            /// User uuid and two_step code to make a post call.
+            // User uuid and two_step code to make a post call.
             PSN::http_client()
                 .post(urls::NP_SSO_ENTRY)
                 .send_form(&self.np_sso_url_encode())
@@ -542,17 +552,17 @@ impl PSNRequest for PSN {
                     Err(_) => Err((PSNError::NetWork, self)),
                 })
                 .and_then(|(mut res, psn)| {
-                    /// At this point the uuid and two_step code are consumed and can't be used anymore.
-                    /// If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
+                    // At this point the uuid and two_step code are consumed and can't be used anymore.
+                    // If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
 
-                    /// Extract the npsso cookie as string from the response json body.
+                    // Extract the npsso cookie as string from the response json body.
                     res.json().then(|r: Result<Npsso, _>| match r {
                         Ok(n) => Ok((n, psn)),
                         Err(_) => Err((PSNError::NoNPSSO, psn)),
                     })
                 })
                 .and_then(|(t, psn)| {
-                    /// Use the npsso we get as a cookie header in a get call.
+                    // Use the npsso we get as a cookie header in a get call.
                     PSN::http_client()
                         .get(urls::GRANT_CODE_ENTRY)
                         .header("Cookie", format!("npsso={}", t.npsso))
@@ -567,14 +577,14 @@ impl PSNRequest for PSN {
                         })
                 })
                 .and_then(|(res, psn)| {
-                    /// Extract the "x-np-grant-code" from the response header and parse it to string.
+                    // Extract the "x-np-grant-code" from the response header and parse it to string.
                     match res.headers().get("x-np-grant-code") {
                         Some(h) => Ok((h.to_str().unwrap().to_owned(), psn)),
                         None => Err((PSNError::NoGrantCode, psn)),
                     }
                 })
                 .and_then(|(grant, psn)| {
-                    /// Use the grant code to make another post call to finish the authentication process.
+                    // Use the grant code to make another post call to finish the authentication process.
                     PSN::http_client()
                         .post(urls::OAUTH_TOKEN_ENTRY)
                         .send_form(&PSN::oauth_token_encode(grant))
@@ -584,7 +594,7 @@ impl PSNRequest for PSN {
                         })
                 })
                 .and_then(|(mut res, mut psn)| {
-                    /// Extract the access_token and refresh_token from the response body json.
+                    // Extract the access_token and refresh_token from the response body json.
                     res.json().then(|r: Result<Tokens, _>| match r {
                         Ok(t) => {
                             psn.last_refresh_at = Some(Instant::now());
@@ -600,8 +610,8 @@ impl PSNRequest for PSN {
 
     fn gen_access_from_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, PSN)>> {
         Box::new(
-            /// Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
-            /// We only need the new access token from response.(refresh token can't be refreshed.)
+            // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
+            // We only need the new access token from response.(refresh token can't be refreshed.)
             PSN::http_client()
                 .post(urls::OAUTH_TOKEN_ENTRY)
                 .send_form(&self.oauth_token_refresh_encode())
@@ -627,38 +637,72 @@ impl PSNRequest for PSN {
             T: DeserializeOwned + 'static,
     {
         Box::new(
-            /// The access_token is used as bearer token and content type header need to be application/json.
+            // The access_token is used as bearer token and content type header need to be application/json.
             PSN::http_client()
                 .get(url)
                 .header(awc::http::header::CONTENT_TYPE, "application/json")
                 .bearer_auth(self.access_token.as_ref().unwrap())
                 .send()
                 .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| res.json().map_err(|_| PSNError::PayLoad)),
+                .and_then(|mut res| {
+                    if res.status() != 200 {
+                        return Either::A(
+                            res.json()
+                                .map_err(|_| PSNError::PayLoad)
+                                .and_then(|e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)))
+                        );
+                    }
+                    Either::B(res.json().map_err(|_| PSNError::PayLoad))
+                }),
+        )
+    }
+
+    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item=(), Error=PSNError>> {
+        Box::new(
+            PSN::http_client()
+                .delete(url)
+                .bearer_auth(self.access_token.as_ref().unwrap())
+                .send()
+                .map_err(|_| PSNError::NetWork)
+                .and_then(|mut res| {
+                    if res.status() != 204 {
+                        return Either::A(
+                            res.json()
+                                .map_err(|_| PSNError::PayLoad)
+                                .and_then(|e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)))
+                        );
+                    }
+                    Either::B(ok(()))
+                }),
         )
     }
 
     fn post_by_multipart(&self, boundary: &str, url: &str, body: Vec<u8>) -> Box<dyn Future<Item=(), Error=PSNError>> {
         Box::new(
-            /// The access_token is used as bearer token and content type header need to be application/json.
+            // The access_token is used as bearer token and content type header need to be multipart/form-data.
             PSN::http_client()
                 .post(url)
                 .header(awc::http::header::CONTENT_TYPE, format!("multipart/form-data; boundary=------------------------{}", boundary))
                 .bearer_auth(self.access_token.as_ref().unwrap())
                 .send_body(body)
-                .map_err(|e| PSNError::NetWork)
-                .and_then(|res| {
+                .map_err(|_| PSNError::NetWork)
+                .and_then(|mut res| {
                     if res.status() != 200 {
-                        return Err(PSNError::PostData);
+                        return Either::A(
+                            res.json()
+                                .map_err(|_| PSNError::PayLoad)
+                                .and_then(|e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)))
+                        );
                     }
-                    Ok(())
+                    Either::B(ok(()))
                 })
         )
     }
 }
 
+
 /// serde_urlencoded can be used to make a `application/x-wwww-url-encoded` `String` buffer from form
-/// it applies to all `EncodeUrl` methods.
+/// it applies to `EncodeUrl` methods return a slice type.
 /// example if your http client don't support auto urlencode convert.
 /// ```rust
 /// use psn_api_rs::{PSN, EncodeUrl};
@@ -688,16 +732,9 @@ pub trait EncodeUrl {
 
     fn generate_thread_encode(&self) -> String;
 
+    fn leave_message_thread_encode(&self, thread_id: &str) -> String;
+
     fn send_message_encode(&self, thread_id: &str) -> String;
-
-    /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image one.
-    /// pass both as `None` will result in generating a new message thread body.
-    fn message_multipart_body(&self, boundary: &str, message: Option<&str>, file_path: Option<&str>) -> Vec<u8>;
-
-    //ToDo: using dummy boundary for now. should generate rng ones.
-    fn generate_boundary() -> String {
-        "ea3bbcf87c101233".to_owned()
-    }
 }
 
 impl EncodeUrl for PSN {
@@ -799,54 +836,69 @@ impl EncodeUrl for PSN {
         format!("https://{}{}/", self.region.as_str(), MESSAGE_THREAD_ENTRY)
     }
 
+    fn leave_message_thread_encode(&self, thread_id: &str) -> String {
+        format!("https://{}{}/{}/users/me", self.region.as_str(), MESSAGE_THREAD_ENTRY, thread_id)
+    }
+
     fn send_message_encode(&self, thread_id: &str) -> String {
         format!("https://{}{}/{}/messages", self.region.as_str(), MESSAGE_THREAD_ENTRY, thread_id)
     }
+}
 
+pub trait MultiPart {
+    /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
+    /// pass both as `None` will result in generating a new message thread body.
+    fn message_multipart_body(&self, boundary: &str, message: Option<&str>, file_path: Option<&str>) -> Vec<u8>;
+
+    //ToDo: using dummy boundary for now. should generate rng ones.
+    fn generate_boundary() -> String {
+        "ea3bbcf87c101233".to_owned()
+    }
+}
+
+impl MultiPart for PSN {
     fn message_multipart_body(&self, boundary: &str, msg: Option<&str>, path: Option<&str>) -> Vec<u8> {
+        let mut result: Vec<u8> = Vec::new();
 
-        let (name, msg) = if msg.is_none() && path.is_none() {
+        if msg.is_none() && path.is_none() {
             let msg = serde_json::to_string(&GenerateNewThread::new(
                 self.online_id.as_ref().unwrap(),
                 self.self_online_id.as_ref())).unwrap_or("".to_owned());
 
-            ("threadDetail", msg)
-        } else {
-            let event_category = if path.is_some() { 3u8 } else { 1 };
-            let msg = serde_json::to_string(&SendMessage::new(msg, event_category)).unwrap_or("".to_owned());
-
-            ("messageEventDetail", msg)
+            write_string(&mut result, boundary, "threadDetail", msg.as_str());
+            return result;
         };
 
-        let mut result: Vec<u8> = Vec::new();
+        let event_category = if path.is_some() { 3u8 } else { 1 };
+        let msg = serde_json::to_string(&SendMessage::new(msg, event_category)).unwrap_or("".to_owned());
 
-        result.extend_from_slice(format!("--------------------------{}\r\n", boundary).as_bytes());
-        result.extend_from_slice(format!("Content-Disposition: form-data; name=\"{}\"\r\n", name).as_bytes());
-        result.extend_from_slice("Content-Type: application/json; charset=utf-8\r\n\r\n".as_bytes());
-        result.extend_from_slice(format!("{}\r\n", msg).as_bytes());
-        result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
 
-//        if let Some(path) = path {
-//            use std::io::prelude::*;
-//
-//            let mut f = std::fs::File::open(path).unwrap();
-//            let mut file_data = Vec::new();
-//            f.read_to_end(&mut file_data).unwrap();
-//
-//            result.extend_from_slice(
-//                format!("Content-Disposition: form-data; name=\"imageData\"; filename=\"233.png\"\r\n")
-//                    .as_bytes(),
-//            );
-//            result.extend_from_slice("Content-Type: image/png\r\n\r\n".as_bytes());
-//            result.extend_from_slice(format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes());
-//
-//            result.append(&mut file_data);
-//
-//            result.extend_from_slice(format!("--{}--\r\n", "ea3bbcf87c101233").as_bytes());
-//        }
+        if let Some(path) = path {
+            use std::io::prelude::*;
+
+            //ToDo: handle error and write file async.
+            let mut f = std::fs::File::open(path).unwrap();
+            let mut file_data = Vec::new();
+            f.read_to_end(&mut file_data).unwrap();
+
+            result.extend_from_slice(format!("Content-Disposition: form-data; name=\"imageData\"\r\n").as_bytes());
+            result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
+            result.extend_from_slice(format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes());
+            result.append(&mut file_data);
+            result.extend_from_slice(format!("\r\n--------------------------{}\r\n", boundary).as_bytes());
+        }
 
         result
     }
+}
+
+fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
+    result.extend_from_slice(format!("--------------------------{}\r\n", boundary).as_bytes());
+    result.extend_from_slice(format!("Content-Disposition: form-data; name=\"{}\"\r\n", name).as_bytes());
+    result.extend_from_slice("Content-Type: application/json; charset=utf-8\r\n\r\n".as_bytes());
+    result.extend_from_slice(format!("{}\r\n", msg).as_bytes());
+    result.extend_from_slice(format!("--------------------------{}\r\n", boundary).as_bytes());
 }
 
 #[cfg(feature = "awc")]
@@ -861,6 +913,20 @@ struct Tokens {
     access_token: Option<String>,
     refresh_token: Option<String>,
 }
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PSNResponseError {
+    error: PSNResponseErrorInner
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PSNResponseErrorInner {
+    code: u32,
+    message: String,
+}
+
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -881,7 +947,7 @@ impl SendMessage {
             message_event_detail: SendMessageEventDetail {
                 event_category_code,
                 message_detail: MessageDetail {
-                    body: body.map(|s| s.to_owned())
+                    body: Some(body.unwrap_or("").to_owned())
                 },
             }
         }

@@ -52,10 +52,7 @@ https://tusticles.com/psn-php/first_login.html\r\n");
         }))
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!(
-        "\r\nAuthentication Success! These are your token info from PSN network : \r\n{:#?}",
-        psn
-    );
+    println!("\r\nAuthentication Success! You PSN info are:\r\n{:#?}", psn);
 
     // get psn user profile by online id
     let user: PSNUser = runtime
@@ -105,6 +102,7 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 
     println!("\r\n\r\nThe example is finished and all api endpoints are good");
     println!("\r\n\r\npsn struct is dropped at this point so it's better to store your access_token and refresh_token locally to make sure they can be reused");
+    println!("Your psn info is : {:#?}", psn);
 }
 
 fn trim(s: &mut String) {
