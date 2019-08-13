@@ -1,12 +1,14 @@
 [package]
 name = "psn_api_rs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["fakeshadow <24548779@qq.com>"]
 edition = "2018"
 description = "A simple PSN Network API wrapper"
 keywords = ["game", "playstation", "psn"]
 license = "MIT"
 exclude = ["example/*"]
+repository = "https://github.com/fakeshadow/psn_api_rs"
+readme= "README.md"
 
 [lib]
 name = "psn_api_rs"

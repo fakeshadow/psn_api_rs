@@ -18,11 +18,10 @@ Get PSN store info.
 
 <br>
 
-#### Documentation:
-please use `cargo doc` for now.
+##### [Documentation](https://docs.rs/psn_api_rs/0.1.0/psn_api_rs/)
+
 
 <br>
 
 ##### Known limitaion:
 Performance could be really bad when running on some windows system. 
-           

@@ -67,7 +67,6 @@ use serde::de::DeserializeOwned;
 
 use crate::models::MessageDetail;
 
-#[cfg(feature = "awc")]
 #[macro_use]
 extern crate serde_derive;
 
