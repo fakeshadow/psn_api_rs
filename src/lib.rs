@@ -25,8 +25,12 @@
 //!
 //!    // construct a PSN struct,add credentials and call auth to generate tokens.
 //!    let mut psn: PSN = runtime.block_on(lazy(|| {
-//!        PSN::new()
-//!            .add_refresh_token(refresh_token)   // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
+//!       PSN::new()
+//!            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
+//!            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
+//!            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
+//!                                                                    // safe to leave unset if you don't need to send any PSN message.
+//!            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
 //!            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
 //!            .add_two_step(two_step)
 //!            .auth()
@@ -52,9 +56,13 @@
 
 use std::time::{Duration, Instant};
 
-use futures::{Future, future::{ok, Either}};
+use futures::{
+    future::{ok, Either},
+    Future,
+};
 
 use derive_more::Display;
+use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
 
 use crate::models::MessageDetail;
@@ -81,11 +89,11 @@ pub mod urls {
 
 const USERS_ENTRY: &'static str = "-prof.np.community.playstation.net/userProfile/v1/users/";
 const USER_TROPHY_ENTRY: &'static str = "-tpy.np.community.playstation.net/trophy/v1/trophyTitles/";
-const MESSAGE_THREAD_ENTRY: &'static str = "-gmsg.np.community.playstation.net/groupMessaging/v1/threads";
+const MESSAGE_THREAD_ENTRY: &'static str =
+    "-gmsg.np.community.playstation.net/groupMessaging/v1/threads";
+const STORE_ENTRY: &'static str = "https://store.playstation.com/valkyrie-api/";
 
-//const ACTIVITY_API: &'static str = "https://activity.api.np.km.playstation.net/activity/api/";
-
-//const STORE_API: &'static str = "https://store.playstation.com/valkyrie-api/";
+//const ACTIVITY_ENTRY: &'static str = "https://activity.api.np.km.playstation.net/activity/api/";
 
 const CLIENT_ID: &'static str = "b7cbf451-6bb6-4a5a-8913-71e61f462787";
 const CLIENT_SECRET: &'static str = "zsISsjmCx85zgCJg";
@@ -95,6 +103,7 @@ const SCOPE: &'static str = "capone:report_submission,psn:sceapp,user:account.ge
 /// `models` are used to deserialize psn response json.
 /// Some response fields are ignored so if you need more/less fields you can use your own struct as long as it impl `serde::Deserialize`.
 pub mod models {
+    ///The response type of `get_profile()`
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct PSNUser {
@@ -116,6 +125,7 @@ pub mod models {
         pub earned_trophies: EarnedTrophies,
     }
 
+    ///The response type of `get_titles()`
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct TrophyTitles {
@@ -154,6 +164,7 @@ pub mod models {
         pub bronze: u32,
     }
 
+    ///The response type of `get_trophy_set()`
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct TrophySet {
@@ -186,6 +197,7 @@ pub mod models {
         pub earned_date: Option<String>,
     }
 
+    ///The response type of `get_message_threads()`
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct MessageThreadsSummary {
@@ -203,6 +215,7 @@ pub mod models {
         pub thread_modified_date: String,
     }
 
+    ///The response type of `get_message_thread()`
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct MessageThread {
@@ -260,19 +273,19 @@ pub mod models {
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct NotificationDetail {
-        pub push_notification_flag: bool
+        pub push_notification_flag: bool,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct NewArrivalEventDetail {
-        pub new_arrival_event_flag: bool
+        pub new_arrival_event_flag: bool,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
     #[serde(rename_all = "camelCase")]
     pub struct ThreadEvent {
-        pub message_event_detail: MessageEventDetail
+        pub message_event_detail: MessageEventDetail,
     }
 
     #[derive(Serialize, Deserialize, Debug)]
@@ -291,6 +304,294 @@ pub mod models {
     #[serde(rename_all = "camelCase")]
     pub struct MessageDetail {
         pub body: Option<String>,
+    }
+
+    ///The response type of `search_store_items()`
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StoreSearchResult {
+        // skip this field for now
+        //        pub data: StoreSearchData,
+        pub included: Vec<StoreSearchData>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StoreSearchData {
+        pub attributes: StoreSearchAttribute,
+        pub id: String,
+        pub relationships: StoreSearchRelationship,
+        #[serde(alias = "type")]
+        pub typ: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    // what a mess.
+    pub struct StoreSearchAttribute {
+        #[serde(alias = "badge-info")]
+        pub badge_info: BadgeInfo,
+        #[serde(alias = "cero-z-status")]
+        pub ceroz_status: CeroZStatus,
+        #[serde(alias = "content-rating")]
+        pub content_rating: ContentRating,
+        #[serde(alias = "content-type")]
+        pub content_type: String,
+        #[serde(alias = "default-sku-id")]
+        pub default_sku_id: String,
+        #[serde(alias = "dob-required")]
+        pub dob_required: bool,
+        #[serde(alias = "file-size")]
+        pub file_size: FileSize,
+        #[serde(alias = "game-content-type")]
+        pub game_content_type: String,
+        pub genres: Vec<String>,
+        #[serde(alias = "is-igc-upsell")]
+        pub is_igc_upsell: bool,
+        #[serde(alias = "is-multiplayer-upsell")]
+        pub is_multiplayer_upsell: bool,
+        #[serde(alias = "kamaji-relationship")]
+        pub kamaji_relationship: String,
+        #[serde(alias = "legal-text")]
+        pub large_text: String,
+        #[serde(alias = "long-description")]
+        pub long_description: String,
+        #[serde(alias = "macross-brain-context")]
+        pub macross_brain_context: String,
+        #[serde(alias = "media-list")]
+        pub media_list: MediaList,
+        pub name: String,
+        #[serde(alias = "nsx-confirm-message")]
+        pub nsx_confirm_message: String,
+        pub parent: Option<ParentGameInfo>,
+        pub platforms: Vec<String>,
+        #[serde(alias = "plus-reward-description")]
+        pub plus_reward_description: Option<String>,
+        #[serde(alias = "primary-classification")]
+        pub primary_classification: String,
+        #[serde(alias = "secondary-classification")]
+        pub secondary_classification: String,
+        #[serde(alias = "provider-name")]
+        pub provider_name: String,
+        #[serde(alias = "ps-camera-compatibility")]
+        pub ps_camera_compatibility: String,
+        #[serde(alias = "ps-move-compatibility")]
+        pub ps_move_compatibility: String,
+        #[serde(alias = "ps-vr-compatibility")]
+        pub ps_vr_compatibility: String,
+        #[serde(alias = "release-date")]
+        pub release_date: String,
+        pub skus: Vec<Sku>,
+        #[serde(alias = "star-rating")]
+        pub star_rating: StarRating,
+        #[serde(alias = "subtitle-language-codes")]
+        // ToDo: this field could be an option with other type
+        pub subtitle_language_codes: Vec<String>,
+        #[serde(alias = "tertiary-classification")]
+        pub tertiary_classification: String,
+        #[serde(alias = "thumbnail-url-base")]
+        pub thumbnail_url_base: String,
+        #[serde(alias = "top-category")]
+        pub top_category: String,
+        #[serde(alias = "upsell-info")]
+        // ToDo: this field could be an option with other type
+        pub upsell_info: Option<String>,
+        #[serde(alias = "voice-language-codes")]
+        // ToDo: this field could be an option with other type
+        pub voice_language_codes: Vec<String>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct BadgeInfo {
+        #[serde(alias = "non-plus-user")]
+        pub non_plus_user: Option<BadgeInfoData>,
+        #[serde(alias = "plus-user")]
+        pub plus_user: Option<BadgeInfoData>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct BadgeInfoData {
+        #[serde(alias = "discount-percentage")]
+        pub discount_percentage: u8,
+        #[serde(alias = "is-plus")]
+        pub is_plus: bool,
+        #[serde(alias = "type")]
+        pub typ: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CeroZStatus {
+        #[serde(alias = "is-allowed-in-cart")]
+        pub is_allowed_in_cart: bool,
+        #[serde(alias = "is-on")]
+        pub is_on: bool,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ContentRating {
+        #[serde(alias = "content-descriptors")]
+        pub content_descriptors: Vec<ContentDescriptor>,
+        pub content_interactive_element: Vec<ContentInteractiveElement>,
+        #[serde(alias = "rating-system")]
+        pub rating_system: String,
+        pub url: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ContentDescriptor {
+        pub description: String,
+        pub name: String,
+        pub url: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ContentInteractiveElement {
+        pub description: String,
+        pub name: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct FileSize {
+        pub unit: String,
+        pub value: f32,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct MediaList {
+        pub preview: Vec<Link>,
+        pub promo: Promo,
+        pub screenshots: Vec<Link>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Promo {
+        pub images: Vec<Link>,
+        pub videos: Vec<Link>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Link {
+        pub url: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ParentGameInfo {
+        pub id: String,
+        pub name: String,
+        pub thumbnail: String,
+        pub url: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Sku {
+        pub entitlements: Vec<Entitlement>,
+        pub id: String,
+        #[serde(alias = "is-preorder")]
+        pub is_preorder: bool,
+        //ToDo: could be other type.
+        pub multibuy: Option<String>,
+        pub name: String,
+        #[serde(alias = "playability-date")]
+        pub playability_date: String,
+        #[serde(alias = "plus-reward-description")]
+        pub plus_reward_description: Option<String>,
+        pub prices: Price,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Entitlement {
+        pub duration: u32,
+        #[serde(alias = "exp-after-first-use")]
+        pub exp_after_first_use: u32,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Price {
+        #[serde(alias = "non-plus-user")]
+        pub non_plus_user: PriceData,
+        #[serde(alias = "plus-user")]
+        pub plus_user: PriceData,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct PriceData {
+        #[serde(alias = "actual-price")]
+        pub actual_price: PriceDisplayValue,
+        pub availability: StartEndDate,
+        #[serde(alias = "discount-percentage")]
+        pub discount_percentage: u8,
+        #[serde(alias = "is-plus")]
+        pub is_plus: bool,
+        #[serde(alias = "strikethrough-price")]
+        pub strikethrough_price: Option<PriceDisplayValue>,
+        #[serde(alias = "upsell-price")]
+        pub upsell_price: Option<PriceDisplayValue>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct PriceDisplayValue {
+        pub display: String,
+        pub value: u16,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StartEndDate {
+        #[serde(alias = "end-date")]
+        pub end_date: Option<String>,
+        #[serde(alias = "start-date")]
+        pub start_date: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StarRating {
+        pub score: f32,
+        pub total: u32,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StoreSearchRelationship {
+        pub children: StoreSearchRelationshipChildren,
+        #[serde(alias = "legacy-skus")]
+        pub legacy_skus: StoreSearchRelationshipLegacySkus,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StoreSearchRelationshipChildren {
+        pub data: Vec<StoreSearchRelationshipData>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StoreSearchRelationshipLegacySkus {
+        pub data: Vec<StoreSearchRelationshipData>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StoreSearchRelationshipData {
+        pub id: String,
+        #[serde(alias = "type")]
+        pub typ: String,
     }
 }
 
@@ -414,12 +715,12 @@ impl PSN {
 ///
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
 pub trait PSNRequest
-    where
-        Self: Sized + EncodeUrl + MultiPart + 'static,
+where
+    Self: Sized + EncodeUrl + MultiPart + 'static,
 {
     type Error;
 
-    fn auth(self) -> Box<dyn Future<Item=PSN, Error=Self::Error>> {
+    fn auth(self) -> Box<dyn Future<Item = PSN, Error = Self::Error>> {
         Box::new(
             self.gen_access_from_refresh()
                 .or_else(|(_, p)| p.gen_access_and_refresh())
@@ -428,31 +729,36 @@ pub trait PSNRequest
     }
 
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item=PSN, Error=(Self::Error, Self)>>;
+    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item=PSN, Error=(Self::Error, Self)>>;
+    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
     fn get_by_url_encode<T: DeserializeOwned + 'static>(
         &self,
         url: &str,
-    ) -> Box<dyn Future<Item=T, Error=Self::Error>>;
+    ) -> Box<dyn Future<Item = T, Error = Self::Error>>;
 
     /// A generic http del handle function. return status 204 as successful response.
-    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item=(), Error=Self::Error>>;
+    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item = (), Error = Self::Error>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
-    fn post_by_multipart(&self, boundary: &str, url: &str, body: Vec<u8>) -> Box<dyn Future<Item=(), Error=Self::Error>>;
+    fn post_by_multipart(
+        &self,
+        boundary: &str,
+        url: &str,
+        body: Vec<u8>,
+    ) -> Box<dyn Future<Item = (), Error = Self::Error>>;
 
     /// need to `add_online_id` before call this method.
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_rofile()
     /// ```
-    fn get_profile<T>(&self) -> Box<dyn Future<Item=T, Error=Self::Error>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_profile<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: DeserializeOwned + 'static,
     {
         self.get_by_url_encode(self.profile_encode().as_str())
     }
@@ -461,9 +767,9 @@ pub trait PSNRequest
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_titles(0)
     /// ```
-    fn get_titles<T>(&self, offset: u32) -> Box<dyn Future<Item=T, Error=Self::Error>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_titles<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: DeserializeOwned + 'static,
     {
         self.get_by_url_encode(self.trophy_summary_encode(offset).as_str())
     }
@@ -472,26 +778,29 @@ pub trait PSNRequest
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
     /// ```
-    fn get_trophy_set<T>(&self) -> Box<dyn Future<Item=T, Error=Self::Error>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_trophy_set<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: DeserializeOwned + 'static,
     {
         self.get_by_url_encode(self.trophy_set_encode().as_str())
     }
 
     /// return message threads of the account you used to login PSN network.
     /// `offset` can't be large than all existing threads count.
-    fn get_message_threads<T>(&self, offset: u32) -> Box<dyn Future<Item=T, Error=Self::Error>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_message_threads<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: DeserializeOwned + 'static,
     {
         self.get_by_url_encode(self.message_threads_encode(offset).as_str())
     }
 
     /// return message thread detail of the `ThreadId`.
-    fn get_message_thread<T>(&self, thread_id: &str) -> Box<dyn Future<Item=T, Error=Self::Error>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_message_thread<T>(
+        &self,
+        thread_id: &str,
+    ) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: DeserializeOwned + 'static,
     {
         self.get_by_url_encode(self.message_thread_encode(thread_id).as_str())
     }
@@ -501,25 +810,50 @@ pub trait PSNRequest
     /// ```rust
     /// PSN::new().set_self_online_id(String::from("NPWR00233")).add_online_id(String::from("123")).generate_message_thread()
     /// ```
-    fn generate_message_thread(&self) -> Box<dyn Future<Item=(), Error=Self::Error>> {
+    fn generate_message_thread(&self) -> Box<dyn Future<Item = (), Error = Self::Error>> {
         let boundary = Self::generate_boundary();
         let body = self.message_multipart_body(boundary.as_str(), None, None);
 
-        self.post_by_multipart(boundary.as_str(), self.generate_thread_encode().as_str(), body)
+        self.post_by_multipart(
+            boundary.as_str(),
+            self.generate_thread_encode().as_str(),
+            body,
+        )
     }
 
-    fn leave_message_thread(&self, thread_id: &str) -> Box<dyn Future<Item=(), Error=Self::Error>> {
+    fn leave_message_thread(
+        &self,
+        thread_id: &str,
+    ) -> Box<dyn Future<Item = (), Error = Self::Error>> {
         self.del_by_url_encode(self.leave_message_thread_encode(thread_id).as_str())
     }
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message(&self, msg: Option<&str>, path: Option<&str>, thread_id: &str) -> Box<dyn Future<Item=(), Error=Self::Error>> {
+    fn send_message(
+        &self,
+        msg: Option<&str>,
+        path: Option<&str>,
+        thread_id: &str,
+    ) -> Box<dyn Future<Item = (), Error = Self::Error>> {
         let boundary = Self::generate_boundary();
         let url = self.send_message_encode(thread_id);
         let body = self.message_multipart_body(boundary.as_str(), msg, path);
 
         self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+    }
+
+    fn search_store_items<T>(
+        &self,
+        lang: &str,
+        region: &str,
+        age: &str,
+        name: &str,
+    ) -> Box<dyn Future<Item = T, Error = Self::Error>>
+    where
+        T: DeserializeOwned + 'static,
+    {
+        self.get_by_url_encode(Self::store_search_encode(lang, region, age, name).as_str())
     }
 }
 
@@ -541,7 +875,7 @@ impl PSN {
 #[cfg(feature = "awc")]
 impl PSNRequest for PSN {
     type Error = PSNError;
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, PSN)>> {
+    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
         Box::new(
             // User uuid and two_step code to make a post call.
             PSN::http_client()
@@ -608,7 +942,7 @@ impl PSNRequest for PSN {
         )
     }
 
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item=PSN, Error=(PSNError, PSN)>> {
+    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
         Box::new(
             // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
             // We only need the new access token from response.(refresh token can't be refreshed.)
@@ -632,32 +966,35 @@ impl PSNRequest for PSN {
         )
     }
 
-    fn get_by_url_encode<T>(&self, url: &str) -> Box<dyn Future<Item=T, Error=PSNError>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_by_url_encode<T>(&self, url: &str) -> Box<dyn Future<Item = T, Error = PSNError>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::new(
             // The access_token is used as bearer token and content type header need to be application/json.
             PSN::http_client()
                 .get(url)
                 .header(awc::http::header::CONTENT_TYPE, "application/json")
-                .bearer_auth(self.access_token.as_ref().unwrap())
+                .bearer_auth(
+                    self.access_token
+                        .as_ref()
+                        .map(String::as_str)
+                        .unwrap_or("incase"),
+                )
                 .send()
                 .map_err(|_| PSNError::NetWork)
                 .and_then(|mut res| {
                     if res.status() != 200 {
-                        return Either::A(
-                            res.json()
-                                .map_err(|_| PSNError::PayLoad)
-                                .and_then(|e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)))
-                        );
+                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
+                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
+                        ));
                     }
-                    Either::B(res.json().map_err(|_| PSNError::PayLoad))
+                    Either::B(res.json().limit(6553500).map_err(|_| PSNError::PayLoad))
                 }),
         )
     }
 
-    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item=(), Error=PSNError>> {
+    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item = (), Error = PSNError>> {
         Box::new(
             PSN::http_client()
                 .delete(url)
@@ -666,40 +1003,43 @@ impl PSNRequest for PSN {
                 .map_err(|_| PSNError::NetWork)
                 .and_then(|mut res| {
                     if res.status() != 204 {
-                        return Either::A(
-                            res.json()
-                                .map_err(|_| PSNError::PayLoad)
-                                .and_then(|e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)))
-                        );
+                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
+                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
+                        ));
                     }
                     Either::B(ok(()))
                 }),
         )
     }
 
-    fn post_by_multipart(&self, boundary: &str, url: &str, body: Vec<u8>) -> Box<dyn Future<Item=(), Error=PSNError>> {
+    fn post_by_multipart(
+        &self,
+        boundary: &str,
+        url: &str,
+        body: Vec<u8>,
+    ) -> Box<dyn Future<Item = (), Error = PSNError>> {
         Box::new(
             // The access_token is used as bearer token and content type header need to be multipart/form-data.
             PSN::http_client()
                 .post(url)
-                .header(awc::http::header::CONTENT_TYPE, format!("multipart/form-data; boundary=------------------------{}", boundary))
+                .header(
+                    awc::http::header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={}", boundary),
+                )
                 .bearer_auth(self.access_token.as_ref().unwrap())
                 .send_body(body)
                 .map_err(|_| PSNError::NetWork)
                 .and_then(|mut res| {
                     if res.status() != 200 {
-                        return Either::A(
-                            res.json()
-                                .map_err(|_| PSNError::PayLoad)
-                                .and_then(|e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)))
-                        );
+                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
+                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
+                        ));
                     }
                     Either::B(ok(()))
-                })
+                }),
         )
     }
 }
-
 
 /// serde_urlencoded can be used to make a `application/x-wwww-url-encoded` `String` buffer from form
 /// it applies to `EncodeUrl` methods return a slice type.
@@ -735,6 +1075,22 @@ pub trait EncodeUrl {
     fn leave_message_thread_encode(&self, thread_id: &str) -> String;
 
     fn send_message_encode(&self, thread_id: &str) -> String;
+
+    fn store_search_encode(lang: &str, region: &str, age: &str, name: &str) -> String {
+        let name = name.replace(" ", "+");
+
+        format!(
+            "{}{}/{}/{}/tumbler-search/{}?suggested_size=999&mode=game",
+            STORE_ENTRY, lang, region, age, name
+        )
+    }
+
+    fn store_item_encode(lang: &str, region: &str, age: &str, game_id: &str) -> String {
+        format!(
+            "{}{}/{}/{}/resolve/{}",
+            STORE_ENTRY, lang, region, age, game_id
+        )
+    }
 }
 
 impl EncodeUrl for PSN {
@@ -820,7 +1176,12 @@ impl EncodeUrl for PSN {
     }
 
     fn message_threads_encode(&self, offset: u32) -> String {
-        format!("https://{}{}?offset={}", self.region.as_str(), MESSAGE_THREAD_ENTRY, offset)
+        format!(
+            "https://{}{}?offset={}",
+            self.region.as_str(),
+            MESSAGE_THREAD_ENTRY,
+            offset
+        )
     }
 
     fn message_thread_encode(&self, thread_id: &str) -> String {
@@ -837,40 +1198,72 @@ impl EncodeUrl for PSN {
     }
 
     fn leave_message_thread_encode(&self, thread_id: &str) -> String {
-        format!("https://{}{}/{}/users/me", self.region.as_str(), MESSAGE_THREAD_ENTRY, thread_id)
+        format!(
+            "https://{}{}/{}/users/me",
+            self.region.as_str(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
     }
 
     fn send_message_encode(&self, thread_id: &str) -> String {
-        format!("https://{}{}/{}/messages", self.region.as_str(), MESSAGE_THREAD_ENTRY, thread_id)
+        format!(
+            "https://{}{}/{}/messages",
+            self.region.as_str(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
     }
 }
 
 pub trait MultiPart {
     /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
     /// pass both as `None` will result in generating a new message thread body.
-    fn message_multipart_body(&self, boundary: &str, message: Option<&str>, file_path: Option<&str>) -> Vec<u8>;
+    fn message_multipart_body(
+        &self,
+        boundary: &str,
+        message: Option<&str>,
+        file_path: Option<&str>,
+    ) -> Vec<u8>;
 
-    //ToDo: using dummy boundary for now. should generate rng ones.
     fn generate_boundary() -> String {
-        "ea3bbcf87c101233".to_owned()
+        let mut boundary = String::with_capacity(50);
+        boundary.push_str("--------------------------");
+
+        let s: String = rand::thread_rng()
+            .sample_iter(Alphanumeric)
+            .take(24)
+            .collect();
+
+        boundary.push_str(s.as_str());
+
+        boundary
     }
 }
 
 impl MultiPart for PSN {
-    fn message_multipart_body(&self, boundary: &str, msg: Option<&str>, path: Option<&str>) -> Vec<u8> {
+    fn message_multipart_body(
+        &self,
+        boundary: &str,
+        msg: Option<&str>,
+        path: Option<&str>,
+    ) -> Vec<u8> {
         let mut result: Vec<u8> = Vec::new();
 
         if msg.is_none() && path.is_none() {
             let msg = serde_json::to_string(&GenerateNewThread::new(
                 self.online_id.as_ref().unwrap(),
-                self.self_online_id.as_ref())).unwrap_or("".to_owned());
+                self.self_online_id.as_ref(),
+            ))
+            .unwrap_or("".to_owned());
 
             write_string(&mut result, boundary, "threadDetail", msg.as_str());
             return result;
         };
 
         let event_category = if path.is_some() { 3u8 } else { 1 };
-        let msg = serde_json::to_string(&SendMessage::new(msg, event_category)).unwrap_or("".to_owned());
+        let msg =
+            serde_json::to_string(&SendMessage::new(msg, event_category)).unwrap_or("".to_owned());
 
         write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
 
@@ -882,11 +1275,15 @@ impl MultiPart for PSN {
             let mut file_data = Vec::new();
             f.read_to_end(&mut file_data).unwrap();
 
-            result.extend_from_slice(format!("Content-Disposition: form-data; name=\"imageData\"\r\n").as_bytes());
+            result.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"imageData\"\r\n").as_bytes(),
+            );
             result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
-            result.extend_from_slice(format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes());
+            result.extend_from_slice(
+                format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
+            );
             result.append(&mut file_data);
-            result.extend_from_slice(format!("\r\n--------------------------{}\r\n", boundary).as_bytes());
+            result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
         }
 
         result
@@ -894,11 +1291,13 @@ impl MultiPart for PSN {
 }
 
 fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
-    result.extend_from_slice(format!("--------------------------{}\r\n", boundary).as_bytes());
-    result.extend_from_slice(format!("Content-Disposition: form-data; name=\"{}\"\r\n", name).as_bytes());
+    result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    result.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"{}\"\r\n", name).as_bytes(),
+    );
     result.extend_from_slice("Content-Type: application/json; charset=utf-8\r\n\r\n".as_bytes());
     result.extend_from_slice(format!("{}\r\n", msg).as_bytes());
-    result.extend_from_slice(format!("--------------------------{}\r\n", boundary).as_bytes());
+    result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
 }
 
 #[cfg(feature = "awc")]
@@ -917,7 +1316,7 @@ struct Tokens {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct PSNResponseError {
-    error: PSNResponseErrorInner
+    error: PSNResponseErrorInner,
 }
 
 #[derive(Deserialize, Debug)]
@@ -927,11 +1326,10 @@ struct PSNResponseErrorInner {
     message: String,
 }
 
-
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct SendMessage {
-    message_event_detail: SendMessageEventDetail
+    message_event_detail: SendMessageEventDetail,
 }
 
 #[derive(Serialize, Debug)]
@@ -947,9 +1345,9 @@ impl SendMessage {
             message_event_detail: SendMessageEventDetail {
                 event_category_code,
                 message_detail: MessageDetail {
-                    body: Some(body.unwrap_or("").to_owned())
+                    body: Some(body.unwrap_or("").to_owned()),
                 },
-            }
+            },
         }
     }
 }
@@ -963,13 +1361,13 @@ struct GenerateNewThread<'a> {
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct NewThreadMembers<'a> {
-    thread_members: Vec<NewThreadMember<'a>>
+    thread_members: Vec<NewThreadMember<'a>>,
 }
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct NewThreadMember<'a> {
-    online_id: &'a str
+    online_id: &'a str,
 }
 
 impl<'a> GenerateNewThread<'a> {
@@ -978,13 +1376,11 @@ impl<'a> GenerateNewThread<'a> {
             thread_detail: NewThreadMembers {
                 thread_members: vec![
                     NewThreadMember {
-                        online_id: other_id
+                        online_id: other_id,
                     },
-                    NewThreadMember {
-                        online_id: self_id
-                    }
-                ]
-            }
+                    NewThreadMember { online_id: self_id },
+                ],
+            },
         }
     }
 }

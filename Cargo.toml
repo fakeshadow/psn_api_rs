@@ -6,6 +6,7 @@ edition = "2018"
 description = "A simple PSN Network API wrapper"
 keywords = ["game", "playstation", "psn"]
 license = "MIT"
+exclude = ["example/*"]
 
 [lib]
 name = "psn_api_rs"
@@ -19,6 +20,7 @@ client = ["awc"]
 awc = { version ="0.2.3", features = ["rust-tls"] , optional = true}
 derive_more = "0.14.1"
 futures = "0.1.28"
+rand = "0.7.0"
 serde = "1.0.98"
 serde_derive = "1.0.98"
 serde_json = "1.0.40"

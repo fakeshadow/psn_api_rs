@@ -4,7 +4,9 @@ use futures::lazy;
 use tokio::runtime::current_thread::Runtime;
 
 use psn_api_rs::{
-    models::{PSNUser, TrophySet, TrophyTitles, MessageThreadsSummary, MessageThread},
+    models::{
+        MessageThread, MessageThreadsSummary, PSNUser, StoreSearchResult, TrophySet, TrophyTitles,
+    },
     PSNRequest, PSN,
 };
 
@@ -13,7 +15,9 @@ fn main() {
     let mut uuid = String::new();
     let mut two_step = String::new();
 
-    println!("Pleas input your refresh_token if you already have one. Press enter to skip to next\r\n");
+    println!(
+        "Pleas input your refresh_token if you already have one. Press enter to skip to next\r\n"
+    );
 
     stdin().read_line(&mut refresh_token).unwrap();
     trim(&mut refresh_token);
@@ -36,28 +40,30 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 
     let mut runtime = Runtime::new().unwrap();
 
-    // get psn struct with tokens.
-    let mut psn: PSN = runtime
-        .block_on(lazy(|| {
-            // construct a new PSN struct, add args and call auth to generate tokens which are need to call other PSN APIs.
-            PSN::new()
-                .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
-                .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
-                .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
-                // safe to leave unset if you don't need to send any PSN message.
-                .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
-                .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
-                .add_two_step(two_step)
-                .auth()
-        }))
-        .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!("\r\nAuthentication Success! You PSN info are:\r\n{:#?}", psn);
+    let mut psn: PSN = runtime.block_on(lazy(||
+        // construct a new PSN struct, add args and call auth to generate tokens which are need to call other PSN APIs.
+        PSN::new()
+            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
+            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
+            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
+            // safe to leave unset if you don't need to send any PSN message.
+            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
+            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
+            .add_two_step(two_step)
+            .auth())).unwrap_or_else(|e| panic!("{:?}", e)
+    );
+
+    println!(
+        "\r\nAuthentication Success! You PSN info are:\r\n{:#?}",
+        psn
+    );
 
     // get psn user profile by online id
     let user: PSNUser = runtime
         .block_on(
-            psn.add_online_id("Hakoom".to_owned()).get_profile(), // <- use the psn struct to call for user_profile
+            psn.add_online_id("Hakoom".to_owned())
+                .get_profile(), // <- use the psn struct to call for user_profile
         )
         .unwrap_or_else(|e| panic!("{:?}", e));
 
@@ -65,7 +71,10 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 
     // get psn user trophy lists by online id
     let titles: TrophyTitles = runtime
-        .block_on(psn.add_online_id("Hakoom".to_owned()).get_titles(0))
+        .block_on(
+            psn.add_online_id("Hakoom".to_owned())
+                .get_titles(0)
+        )
         .unwrap_or_else(|e| panic!("{:?}", e));
 
     println!("\r\nGot example trophy titles info : \r\n{:#?}", titles);
@@ -96,9 +105,19 @@ https://tusticles.com/psn-php/first_login.html\r\n");
                 .unwrap_or_else(|e| panic!("{:?}", e));
 
             println!("\r\nGot example thread detail info : \r\n{:#?}", thread);
-        },
+        }
         None => println!("\r\nIt seems this account doesn't have any threads so thread detail example is skipped")
     }
+
+    // store apis don't need authentication.
+    let search: StoreSearchResult = runtime
+        .block_on(
+            PSN::new()
+                .search_store_items("en", "us", "20", "ace combat")
+        )
+        .unwrap_or_else(|e| panic!("{:?}", e));
+
+    println!("Got example PSN store response: {:#?}", search);
 
     println!("\r\n\r\nThe example is finished and all api endpoints are good");
     println!("\r\n\r\npsn struct is dropped at this point so it's better to store your access_token and refresh_token locally to make sure they can be reused");
@@ -113,4 +132,3 @@ fn trim(s: &mut String) {
         }
     }
 }
-

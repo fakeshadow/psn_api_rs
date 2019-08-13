@@ -1,6 +1,6 @@
 ### **A Simple PSN API wrapper**
 
-#### This is a working in progress. It have very limit API functions for now.
+#### This is a working in progress. It have limit API functions for now.
 
 <br>
 
@@ -13,8 +13,8 @@ remove `features = ["client"]` if you don't want to use build in http client.(Se
 #### Features:
 Use actix-web-client as http client connecting to PSN network.<br>
 Get psn user profile, trophies, games info <br>
-Receive/send PSN messages.(ToDo) <br>
-Get PSN store info.(ToDo)
+Receive/send PSN messages.<br>
+Get PSN store info.
 
 <br>
 
