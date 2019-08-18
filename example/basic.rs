@@ -22,7 +22,7 @@ fn main() {
     stdin().read_line(&mut refresh_token).unwrap();
     trim(&mut refresh_token);
 
-    if refresh_token.len() == 0 {
+    if refresh_token.is_empty() {
         println!("Please input your uuid and press enter to continue.\r\n
 You can check this link below to see how to get one paired with a two_step code which will be needed later\r\n
 https://tusticles.com/psn-php/first_login.html\r\n");
@@ -40,19 +40,19 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 
     let mut runtime = Runtime::new().unwrap();
 
-
-    let mut psn: PSN = runtime.block_on(lazy(||
-        // construct a new PSN struct, add args and call auth to generate tokens which are need to call other PSN APIs.
-        PSN::new()
-            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
-            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
-            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
-            // safe to leave unset if you don't need to send any PSN message.
-            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
-            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
-            .add_two_step(two_step)
-            .auth())).unwrap_or_else(|e| panic!("{:?}", e)
-    );
+    let mut psn: PSN = runtime
+        .block_on(lazy(||
+            // construct a new PSN struct, add args and call auth to generate tokens which are need to call other PSN APIs.
+            PSN::new()
+                .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
+                .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
+                .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
+                // safe to leave unset if you don't need to send any PSN message.
+                .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
+                .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
+                .add_two_step(two_step)
+                .auth()))
+        .unwrap_or_else(|e| panic!("{:?}", e));
 
     println!(
         "\r\nAuthentication Success! You PSN info are:\r\n{:#?}",
@@ -62,8 +62,7 @@ https://tusticles.com/psn-php/first_login.html\r\n");
     // get psn user profile by online id
     let user: PSNUser = runtime
         .block_on(
-            psn.add_online_id("Hakoom".to_owned())
-                .get_profile(), // <- use the psn struct to call for user_profile
+            psn.add_online_id("Hakoom".to_owned()).get_profile(), // <- use the psn struct to call for user_profile
         )
         .unwrap_or_else(|e| panic!("{:?}", e));
 
@@ -71,10 +70,7 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 
     // get psn user trophy lists by online id
     let titles: TrophyTitles = runtime
-        .block_on(
-            psn.add_online_id("Hakoom".to_owned())
-                .get_titles(0)
-        )
+        .block_on(psn.add_online_id("Hakoom".to_owned()).get_titles(0))
         .unwrap_or_else(|e| panic!("{:?}", e));
 
     println!("\r\nGot example trophy titles info : \r\n{:#?}", titles);
@@ -111,10 +107,7 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 
     // store apis don't need authentication.
     let search: StoreSearchResult = runtime
-        .block_on(
-            PSN::new()
-                .search_store_items("en", "us", "20", "ace combat")
-        )
+        .block_on(PSN::new().search_store_items("en", "us", "20", "ace combat"))
         .unwrap_or_else(|e| panic!("{:?}", e));
 
     println!("Got example PSN store response: {:#?}", search);
@@ -125,9 +118,9 @@ https://tusticles.com/psn-php/first_login.html\r\n");
 }
 
 fn trim(s: &mut String) {
-    if s.ends_with("\n") {
+    if s.ends_with('\n') {
         s.pop();
-        if s.ends_with("\r") {
+        if s.ends_with('\r') {
             s.pop();
         }
     }

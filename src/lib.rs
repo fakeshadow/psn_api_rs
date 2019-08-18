@@ -54,21 +54,20 @@
 //!}
 //!```
 
+#[macro_use]
+extern crate serde_derive;
+
 use std::time::{Duration, Instant};
 
+use derive_more::Display;
 use futures::{
     future::{ok, Either},
     Future,
 };
-
-use derive_more::Display;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
 
 use crate::models::MessageDetail;
-
-#[macro_use]
-extern crate serde_derive;
 
 /// `urls` are hard coded for PSN authentication which are used if you want to impl your own http client.
 pub mod urls {
@@ -76,28 +75,26 @@ pub mod urls {
     /// ```rust
     /// format!("https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?duid={}&app_context=inapp_ios&client_id={}&scope={}&response_type=code", DUID, CLIENT_ID, SCOPE);
     /// ```
-    pub const GRANT_CODE_ENTRY: &'static str =
+    pub const GRANT_CODE_ENTRY: &str =
         "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?duid=0000000d000400808F4B3AA3301B4945B2E3636E38C0DDFC&app_context=inapp_ios&client_id=b7cbf451-6bb6-4a5a-8913-71e61f462787&scope=capone:report_submission,psn:sceapp,user:account.get,user:account.settings.privacy.get,user:account.settings.privacy.update,user:account.realName.get,user:account.realName.update,kamaji:get_account_hash,kamaji:ugc:distributor,oauth:manage_device_usercodes&response_type=code";
 
-    pub const NP_SSO_ENTRY: &'static str =
-        "https://auth.api.sonyentertainmentnetwork.com/2.0/ssocookie";
+    pub const NP_SSO_ENTRY: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/ssocookie";
 
-    pub const OAUTH_TOKEN_ENTRY: &'static str =
+    pub const OAUTH_TOKEN_ENTRY: &str =
         "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token";
 }
 
-const USERS_ENTRY: &'static str = "-prof.np.community.playstation.net/userProfile/v1/users/";
-const USER_TROPHY_ENTRY: &'static str = "-tpy.np.community.playstation.net/trophy/v1/trophyTitles/";
-const MESSAGE_THREAD_ENTRY: &'static str =
-    "-gmsg.np.community.playstation.net/groupMessaging/v1/threads";
-const STORE_ENTRY: &'static str = "https://store.playstation.com/valkyrie-api/";
+const USERS_ENTRY: &str = "-prof.np.community.playstation.net/userProfile/v1/users/";
+const USER_TROPHY_ENTRY: &str = "-tpy.np.community.playstation.net/trophy/v1/trophyTitles/";
+const MESSAGE_THREAD_ENTRY: &str = "-gmsg.np.community.playstation.net/groupMessaging/v1/threads";
+const STORE_ENTRY: &str = "https://store.playstation.com/valkyrie-api/";
 
 //const ACTIVITY_ENTRY: &'static str = "https://activity.api.np.km.playstation.net/activity/api/";
 
-const CLIENT_ID: &'static str = "b7cbf451-6bb6-4a5a-8913-71e61f462787";
-const CLIENT_SECRET: &'static str = "zsISsjmCx85zgCJg";
-const DUID: &'static str = "0000000d000400808F4B3AA3301B4945B2E3636E38C0DDFC";
-const SCOPE: &'static str = "capone:report_submission,psn:sceapp,user:account.get,user:account.settings.privacy.get,user:account.settings.privacy.update,user:account.realName.get,user:account.realName.update,kamaji:get_account_hash,kamaji:ugc:distributor,oauth:manage_device_usercodes";
+const CLIENT_ID: &str = "b7cbf451-6bb6-4a5a-8913-71e61f462787";
+const CLIENT_SECRET: &str = "zsISsjmCx85zgCJg";
+const DUID: &str = "0000000d000400808F4B3AA3301B4945B2E3636E38C0DDFC";
+const SCOPE: &str = "capone:report_submission,psn:sceapp,user:account.get,user:account.settings.privacy.get,user:account.settings.privacy.update,user:account.realName.get,user:account.realName.update,kamaji:get_account_hash,kamaji:ugc:distributor,oauth:manage_device_usercodes";
 
 /// `models` are used to deserialize psn response json.
 /// Some response fields are ignored so if you need more/less fields you can use your own struct as long as it impl `serde::Deserialize`.
@@ -629,8 +626,8 @@ pub enum PSNError {
     FromPSN(String),
 }
 
-impl PSN {
-    pub fn new() -> Self {
+impl Default for PSN {
+    fn default() -> PSN {
         PSN {
             region: "hk".to_owned(),
             self_online_id: "".to_owned(),
@@ -645,10 +642,20 @@ impl PSN {
             language: "en".to_owned(),
         }
     }
+}
+
+impl PSN {
+    pub fn new() -> Self {
+        PSN::default()
+    }
 
     pub fn add_refresh_token(mut self, refresh_token: String) -> Self {
         self.refresh_token = Some(refresh_token);
         self
+    }
+
+    pub fn get_refresh_token(&self) -> Option<&str> {
+        self.refresh_token.as_ref().map(String::as_str)
     }
 
     pub fn add_uuid(mut self, uuid: String) -> Self {
@@ -700,13 +707,8 @@ impl PSN {
 
     /// check if it's about time the access_token expires.
     pub fn should_refresh(&self) -> bool {
-        if Instant::now().duration_since(self.last_refresh_at.unwrap_or(Instant::now()))
+        Instant::now().duration_since(self.last_refresh_at.unwrap_or_else(Instant::now))
             > Duration::from_secs(3000)
-        {
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -988,7 +990,7 @@ impl PSNRequest for PSN {
                             |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
                         ));
                     }
-                    Either::B(res.json().limit(6553500).map_err(|_| PSNError::PayLoad))
+                    Either::B(res.json().limit(6_553_500).map_err(|_| PSNError::PayLoad))
                 }),
         )
     }
@@ -1254,15 +1256,15 @@ impl MultiPart for PSN {
                 self.online_id.as_ref().unwrap(),
                 self.self_online_id.as_ref(),
             ))
-            .unwrap_or("".to_owned());
+            .unwrap_or_else(|_| "".to_owned());
 
             write_string(&mut result, boundary, "threadDetail", msg.as_str());
             return result;
         };
 
         let event_category = if path.is_some() { 3u8 } else { 1 };
-        let msg =
-            serde_json::to_string(&SendMessage::new(msg, event_category)).unwrap_or("".to_owned());
+        let msg = serde_json::to_string(&SendMessage::new(msg, event_category))
+            .unwrap_or_else(|_| "".to_owned());
 
         write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
 
@@ -1275,7 +1277,7 @@ impl MultiPart for PSN {
             f.read_to_end(&mut file_data).unwrap();
 
             result.extend_from_slice(
-                format!("Content-Disposition: form-data; name=\"imageData\"\r\n").as_bytes(),
+                "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
             );
             result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
             result.extend_from_slice(

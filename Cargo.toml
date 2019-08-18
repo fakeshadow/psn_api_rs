@@ -19,7 +19,7 @@ default = []
 client = ["awc"]
 
 [dependencies]
-awc = { version ="0.2.3", features = ["rust-tls"] , optional = true}
+awc = { version ="0.2.4", features = ["rust-tls"] , optional = true}
 derive_more = "0.14.1"
 futures = "0.1.28"
 rand = "0.7.0"
