@@ -707,8 +707,13 @@ impl PSN {
 
     /// check if it's about time the access_token expires.
     pub fn should_refresh(&self) -> bool {
-        Instant::now().duration_since(self.last_refresh_at.unwrap_or_else(Instant::now))
-            > Duration::from_secs(3000)
+        if let Some(i) = self.last_refresh_at {
+            let now = Instant::now();
+            if now > i {
+                return Instant::now().duration_since(i) > Duration::from_secs(3000);
+            }
+        }
+        false
     }
 }
 
