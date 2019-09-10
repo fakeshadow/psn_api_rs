@@ -11,21 +11,16 @@
 //!
 //! # Example:
 //!``` rust
-//!use futures::lazy;
-//!
-//!use tokio::runtime::current_thread::Runtime;
 //!use psn_api_rs::{PSNRequest, PSN, models::PSNUser};
 //!
-//!fn main() {
+//!#[tokio::main]
+//!async fn main() -> std::io::Result<()> {
 //!    let refresh_token = String::from("your refresh token");
 //!    let uuid = String::from("your uuid");
 //!    let two_step = String::from("your two_step code");
 //!
-//!    let mut runtime = Runtime::new().unwrap();
-//!
 //!    // construct a PSN struct,add credentials and call auth to generate tokens.
-//!    let mut psn: PSN = runtime.block_on(lazy(|| {
-//!       PSN::new()
+//!    let mut psn: PSN = PSN::new()
 //!            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
 //!            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
 //!            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
@@ -34,22 +29,26 @@
 //!            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
 //!            .add_two_step(two_step)
 //!            .auth()
-//!    })).unwrap_or_else(|e| panic!("{:?}", e));
+//!            .await
+//!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
 //!    println!(
 //!        "Authentication Success! These are your token info from PSN network: \r\n{:#?} ",
 //!        psn
 //!    );
 //!
-//!    let user: PSNUser = runtime.block_on(
-//!        psn.add_online_id("Hakoom".to_owned()).get_profile()  // <- use the psn struct to call for user_profile.
-//!    ).unwrap_or_else(|e| panic!("{:?}", e));
+//!    let user: PSNUser = psn
+//!            .add_online_id("Hakoom".to_owned())
+//!            .get_profile()
+//!            .await
+//!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
 //!    println!(
 //!        "Example finished. Got user info : \r\n{:#?}",
 //!        user
 //!    );
 //!
+//!    Ok(())
 //!    // psn struct is dropped at this point so it's better to store your access_token and refresh_token here to make them reusable.
 //!}
 //!```
@@ -57,13 +56,13 @@
 #[macro_use]
 extern crate serde_derive;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use derive_more::Display;
-use futures::{
-    future::{ok, Either},
-    Future,
-};
+use futures::TryStreamExt;
+use hyper::{Body, Client, Request};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
 
@@ -607,7 +606,7 @@ pub struct PSN {
 }
 
 /// You can override `PSNRequest` trait to impl your own error type.
-#[cfg(feature = "awc")]
+#[cfg(feature = "hyper")]
 #[derive(Debug, Display)]
 pub enum PSNError {
     #[display(fmt = "No Access Token is found. Please login in first")]
@@ -720,95 +719,121 @@ impl PSN {
 /// You can override `PSNRequest` trait to impl your preferred http client
 ///
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
-pub trait PSNRequest
-where
-    Self: Sized + EncodeUrl + MultiPart + 'static,
-{
+pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     type Error;
 
-    fn auth(self) -> Box<dyn Future<Item = PSN, Error = Self::Error>> {
-        Box::new(
-            self.gen_access_from_refresh()
-                .or_else(|(_, p)| p.gen_access_and_refresh())
-                .map_err(|(e, _)| e),
-        )
+    fn auth(mut self) -> Pin<Box<dyn Future<Output=Result<Self, Self::Error>> + Send >> {
+        Box::pin(async move {
+            if self.gen_access_and_refresh().await.is_err() {
+                self.gen_access_from_refresh().await?;
+            }
+            Ok(self)
+        })
     }
 
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
+    fn gen_access_and_refresh<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
+    fn gen_access_from_refresh<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
-    fn get_by_url_encode<T: DeserializeOwned + 'static>(
-        &self,
-        url: &str,
-    ) -> Box<dyn Future<Item = T, Error = Self::Error>>;
+    fn get_by_url_encode<'a, T: DeserializeOwned + 'static>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>;
 
     /// A generic http del handle function. return status 204 as successful response.
-    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item = (), Error = Self::Error>>;
+    fn del_by_url_encode<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
-    fn post_by_multipart(
-        &self,
-        boundary: &str,
-        url: &str,
+    fn post_by_multipart<'a>(
+        &'a self,
+        boundary: &'a str,
+        url: &'a str,
         body: Vec<u8>,
-    ) -> Box<dyn Future<Item = (), Error = Self::Error>>;
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
 
     /// need to `add_online_id` before call this method.
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_rofile()
     /// ```
-    fn get_profile<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
+    fn get_profile<'a, T>(&'a self) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
     {
-        self.get_by_url_encode(self.profile_encode().as_str())
+        Box::pin(async move {
+            let url = self.profile_encode();
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// need to `add_online_id` and give a legit `offset`(offset can't be larger than the total trophy lists a user have).
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_titles(0)
     /// ```
-    fn get_titles<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
+    fn get_titles<'a, T>(
+        &'a self,
+        offset: u32,
+    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
     {
-        self.get_by_url_encode(self.trophy_summary_encode(offset).as_str())
+        Box::pin(async move {
+            let url = self.trophy_summary_encode(offset);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// need to `add_online_id` and `add_np_communication_id` before call this method.
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
     /// ```
-    fn get_trophy_set<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
+    fn get_trophy_set<'a, T>(&'a self) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
     {
-        self.get_by_url_encode(self.trophy_set_encode().as_str())
+        Box::pin(async move {
+            let url = self.trophy_set_encode();
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// return message threads of the account you used to login PSN network.
     /// `offset` can't be large than all existing threads count.
-    fn get_message_threads<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
+    fn get_message_threads<'a, T>(
+        &'a self,
+        offset: u32,
+    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
     {
-        self.get_by_url_encode(self.message_threads_encode(offset).as_str())
+        Box::pin(async move {
+            let url = self.message_threads_encode(offset);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// return message thread detail of the `ThreadId`.
-    fn get_message_thread<T>(
-        &self,
-        thread_id: &str,
-    ) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
+    fn get_message_thread<'a, T>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
     {
-        self.get_by_url_encode(self.message_thread_encode(thread_id).as_str())
+        Box::pin(async move {
+            let url = self.message_thread_encode(thread_id);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// need to `add_online_id` and `set_self_online_id` before call this method.
@@ -816,233 +841,277 @@ where
     /// ```rust
     /// PSN::new().set_self_online_id(String::from("NPWR00233")).add_online_id(String::from("123")).generate_message_thread()
     /// ```
-    fn generate_message_thread(&self) -> Box<dyn Future<Item = (), Error = Self::Error>> {
-        let boundary = Self::generate_boundary();
-        let body = self.message_multipart_body(boundary.as_str(), None, None);
+    fn generate_message_thread<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let boundary = Self::generate_boundary();
+            let body = self.message_multipart_body(boundary.as_str(), None, None);
+            let url = self.generate_thread_encode();
 
-        self.post_by_multipart(
-            boundary.as_str(),
-            self.generate_thread_encode().as_str(),
-            body,
-        )
+            self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+                .await
+        })
     }
 
-    fn leave_message_thread(
-        &self,
-        thread_id: &str,
-    ) -> Box<dyn Future<Item = (), Error = Self::Error>> {
-        self.del_by_url_encode(self.leave_message_thread_encode(thread_id).as_str())
+    fn leave_message_thread<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let url = self.leave_message_thread_encode(thread_id);
+            self.del_by_url_encode(url.as_str()).await
+        })
     }
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message(
-        &self,
-        msg: Option<&str>,
-        path: Option<&str>,
-        thread_id: &str,
-    ) -> Box<dyn Future<Item = (), Error = Self::Error>> {
-        let boundary = Self::generate_boundary();
-        let url = self.send_message_encode(thread_id);
-        let body = self.message_multipart_body(boundary.as_str(), msg, path);
 
-        self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+    fn send_message<'a>(
+        &'a self,
+        msg: Option<&'a str>,
+        path: Option<&'a str>,
+        thread_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            let boundary = Self::generate_boundary();
+            let url = self.send_message_encode(thread_id);
+            let body = self.message_multipart_body(boundary.as_str(), msg, path);
+
+            self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+                .await
+        })
     }
 
-    fn search_store_items<T>(
-        &self,
-        lang: &str,
-        region: &str,
-        age: &str,
-        name: &str,
-    ) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
+    fn search_store_items<'a, T>(
+        &'a self,
+        lang: &'a str,
+        region: &'a str,
+        age: &'a str,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
     {
-        self.get_by_url_encode(Self::store_search_encode(lang, region, age, name).as_str())
+        Box::pin(async move {
+            let url = Self::store_search_encode(lang, region, age, name);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 }
 
-#[cfg(feature = "awc")]
-impl PSN {
-    /// default http client
-    fn http_client() -> awc::Client {
-        awc::Client::build()
-            .connector(
-                awc::Connector::new()
-                    .timeout(Duration::from_secs(10))
-                    .finish(),
-            )
-            .timeout(Duration::from_secs(10))
-            .finish()
-    }
-}
-
-#[cfg(feature = "awc")]
+#[cfg(feature = "hyper")]
 impl PSNRequest for PSN {
     type Error = PSNError;
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
-        Box::new(
-            // User uuid and two_step code to make a post call.
-            PSN::http_client()
-                .post(urls::NP_SSO_ENTRY)
-                .send_form(&self.np_sso_url_encode())
-                .then(|r| match r {
-                    Ok(r) => Ok((r, self)),
-                    Err(_) => Err((PSNError::NetWork, self)),
-                })
-                .and_then(|(mut res, psn)| {
-                    // At this point the uuid and two_step code are consumed and can't be used anymore.
-                    // If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
+    fn gen_access_and_refresh<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+        Box::pin(async move {
+            let client = Client::new();
 
-                    // Extract the npsso cookie as string from the response json body.
-                    res.json().then(|r: Result<Npsso, _>| match r {
-                        Ok(n) => Ok((n, psn)),
-                        Err(_) => Err((PSNError::NoNPSSO, psn)),
-                    })
-                })
-                .and_then(|(t, psn)| {
-                    // Use the npsso we get as a cookie header in a get call.
-                    PSN::http_client()
-                        .get(urls::GRANT_CODE_ENTRY)
-                        .header("Cookie", format!("npsso={}", t.npsso))
-                        .header(
-                            awc::http::header::CONTENT_TYPE,
-                            "application/x-www-form-urlencoded",
-                        )
-                        .send()
-                        .then(|r| match r {
-                            Ok(r) => Ok((r, psn)),
-                            Err(_) => Err((PSNError::NetWork, psn)),
-                        })
-                })
-                .and_then(|(res, psn)| {
-                    // Extract the "x-np-grant-code" from the response header and parse it to string.
-                    match res.headers().get("x-np-grant-code") {
-                        Some(h) => Ok((h.to_str().unwrap().to_owned(), psn)),
-                        None => Err((PSNError::NoGrantCode, psn)),
-                    }
-                })
-                .and_then(|(grant, psn)| {
-                    // Use the grant code to make another post call to finish the authentication process.
-                    PSN::http_client()
-                        .post(urls::OAUTH_TOKEN_ENTRY)
-                        .send_form(&PSN::oauth_token_encode(grant))
-                        .then(|r| match r {
-                            Ok(r) => Ok((r, psn)),
-                            Err(_) => Err((PSNError::NetWork, psn)),
-                        })
-                })
-                .and_then(|(mut res, mut psn)| {
-                    // Extract the access_token and refresh_token from the response body json.
-                    res.json().then(|r: Result<Tokens, _>| match r {
-                        Ok(t) => {
-                            psn.last_refresh_at = Some(Instant::now());
-                            psn.access_token = t.access_token;
-                            psn.refresh_token = t.refresh_token;
-                            Ok(psn)
-                        }
-                        Err(_) => Err((PSNError::Tokens, psn)),
-                    })
-                }),
-        )
+            let string = serde_urlencoded::to_string(&self.np_sso_url_encode())
+                .expect("This should not fail");
+
+            let req = Request::builder()
+                .method("POST")
+                .uri(urls::NP_SSO_ENTRY)
+                .header(
+                    hyper::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(Body::from(string))
+                .expect("failed to build request which should not happen");
+
+            // User uuid and two_step code to make a post call.
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+
+            /*
+                At this point the uuid and two_step code are consumed and can't be used anymore.
+                If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
+            */
+
+            // Extract the npsso cookie as string from the response json body.
+            let npsso: Npsso = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+
+
+            // Use the npsso we get as a cookie header.
+            let req = Request::builder()
+                .method("GET")
+                .uri(urls::GRANT_CODE_ENTRY)
+                .header("Cookie", format!("npsso={}", npsso.npsso))
+                .header(
+                    hyper::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(Body::empty())
+                .expect("failed to build request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+
+            // Extract the "x-np-grant-code" from the response header and parse it to string.
+            let grant = match res.headers().get("x-np-grant-code") {
+                Some(h) => h.to_str().unwrap().to_owned(),
+                None => return Err(PSNError::NoGrantCode),
+            };
+
+            let string = serde_urlencoded::to_string(&PSN::oauth_token_encode(grant))
+                .expect("This should not fail");
+
+            // Use the grant code to make another post request to finish the authentication process.
+            let req = Request::builder()
+                .method("POST")
+                .uri(urls::OAUTH_TOKEN_ENTRY)
+                .header(
+                    hyper::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(Body::from(string))
+                .expect("failed to build request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+
+            // Extract the access_token and refresh_token from the response body json.
+            let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+
+            self.last_refresh_at = Some(Instant::now());
+            self.access_token = tokens.access_token;
+            self.refresh_token = tokens.refresh_token;
+            Ok(())
+
+        })
     }
 
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
-        Box::new(
+    fn gen_access_from_refresh<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+        Box::pin(async move {
             // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
             // We only need the new access token from response.(refresh token can't be refreshed.)
-            PSN::http_client()
-                .post(urls::OAUTH_TOKEN_ENTRY)
-                .send_form(&self.oauth_token_refresh_encode())
-                .then(|r| match r {
-                    Ok(r) => Ok((r, self)),
-                    Err(_) => Err((PSNError::NetWork, self)),
-                })
-                .and_then(|(mut res, mut psn)| {
-                    res.json().then(|r: Result<Tokens, _>| match r {
-                        Ok(t) => {
-                            psn.last_refresh_at = Some(Instant::now());
-                            psn.access_token = t.access_token;
-                            Ok(psn)
-                        }
-                        Err(_) => Err((PSNError::Tokens, psn)),
-                    })
-                }),
-        )
-    }
+            let client = Client::new();
 
-    fn get_by_url_encode<T>(&self, url: &str) -> Box<dyn Future<Item = T, Error = PSNError>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        Box::new(
-            // The access_token is used as bearer token and content type header need to be application/json.
-            PSN::http_client()
-                .get(url)
-                .header(awc::http::header::CONTENT_TYPE, "application/json")
-                .bearer_auth(
-                    self.access_token
-                        .as_ref()
-                        .map(String::as_str)
-                        .unwrap_or("incase"),
-                )
-                .send()
-                .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    if res.status() != 200 {
-                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
-                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
-                        ));
-                    }
-                    Either::B(res.json().limit(6_553_500).map_err(|_| PSNError::PayLoad))
-                }),
-        )
-    }
+            let string = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
+                .expect("This should not fail");
 
-    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item = (), Error = PSNError>> {
-        Box::new(
-            PSN::http_client()
-                .delete(url)
-                .bearer_auth(self.access_token.as_ref().unwrap())
-                .send()
-                .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    if res.status() != 204 {
-                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
-                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
-                        ));
-                    }
-                    Either::B(ok(()))
-                }),
-        )
-    }
-
-    fn post_by_multipart(
-        &self,
-        boundary: &str,
-        url: &str,
-        body: Vec<u8>,
-    ) -> Box<dyn Future<Item = (), Error = PSNError>> {
-        Box::new(
-            // The access_token is used as bearer token and content type header need to be multipart/form-data.
-            PSN::http_client()
-                .post(url)
+            let req = Request::builder()
+                .method("POST")
+                .uri(urls::OAUTH_TOKEN_ENTRY)
                 .header(
-                    awc::http::header::CONTENT_TYPE,
-                    format!("multipart/form-data; boundary={}", boundary),
+                    hyper::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
                 )
-                .bearer_auth(self.access_token.as_ref().unwrap())
-                .send_body(body)
-                .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    if res.status() != 200 {
-                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
-                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
-                        ));
-                    }
-                    Either::B(ok(()))
-                }),
+                .body(Body::from(string))
+                .expect("failed to build request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+
+            // Extract the access_token and refresh_token from the response body json.
+            let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+
+            self.last_refresh_at = Some(Instant::now());
+            self.access_token = tokens.access_token;
+            Ok(())
+
+        })
+    }
+
+    fn get_by_url_encode<'a, T>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<T, PSNError>> + Send + 'a>>
+        where
+            T: DeserializeOwned + 'static,
+    {
+        Box::pin(
+            // The access_token is used as bearer token and content type header need to be application/json.
+            async move {
+                let client = Client::new();
+
+                let req = Request::builder()
+                    .method("GET")
+                    .uri(url)
+                    .header(hyper::header::CONTENT_TYPE, "application/json")
+                    .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
+                    .body(Body::empty())
+                    .expect("failed to build request which should not happen");
+
+                let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+                let code = res.status();
+                let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+
+                if code != 200 {
+                    let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+                    Err(PSNError::FromPSN(e.error.message))
+                } else {
+                    serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)
+                }
+
+            },
+        )
+    }
+
+    fn del_by_url_encode<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+        Box::pin(async move {
+            let client = Client::new();
+
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(url)
+                .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
+                .body(Body::empty())
+                .expect("failed to build request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+            let code = res.status();
+            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+
+            if code != 204 {
+                let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+                Err(PSNError::FromPSN(e.error.message))
+            } else {
+                Ok(())
+            }
+
+        })
+    }
+
+    fn post_by_multipart<'a>(
+        &'a self,
+        boundary: &'a str,
+        url: &'a str,
+        body: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+        Box::pin(
+            // The access_token is used as bearer token and content type header need to be multipart/form-data.
+            async move {
+                let client = Client::new();
+
+                let req = Request::builder()
+                    .method("POST")
+                    .uri(url)
+                    .header(hyper::header::CONTENT_TYPE, format!("multipart/form-data; boundary={}", boundary))
+                    .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
+                    .body(Body::from(body))
+                    .expect("failed to build request which should not happen");
+
+                let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+                let code = res.status();
+                let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+
+                if code != 200 {
+                    let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+                    Err(PSNError::FromPSN(e.error.message))
+                } else {
+                    Ok(())
+                }
+
+            },
         )
     }
 }
@@ -1261,7 +1330,7 @@ impl MultiPart for PSN {
                 self.online_id.as_ref().unwrap(),
                 self.self_online_id.as_ref(),
             ))
-            .unwrap_or_else(|_| "".to_owned());
+                .unwrap_or_else(|_| "".to_owned());
 
             write_string(&mut result, boundary, "threadDetail", msg.as_str());
             return result;
@@ -1306,13 +1375,13 @@ fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
     result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
 }
 
-#[cfg(feature = "awc")]
+#[cfg(feature = "hyper")]
 #[derive(Deserialize)]
 struct Npsso {
     npsso: String,
 }
 
-#[cfg(feature = "awc")]
+#[cfg(feature = "hyper")]
 #[derive(Deserialize)]
 struct Tokens {
     access_token: Option<String>,
