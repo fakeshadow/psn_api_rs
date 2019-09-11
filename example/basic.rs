@@ -4,37 +4,12 @@ use psn_api_rs::{
     models::{
         MessageThread, MessageThreadsSummary, PSNUser, StoreSearchResult, TrophySet, TrophyTitles,
     },
-    PSNRequest, PSN,
+    PSN, PSNRequest,
 };
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let mut refresh_token = String::new();
-    let mut uuid = String::new();
-    let mut two_step = String::new();
-
-    println!(
-        "Pleas input your refresh_token if you already have one. Press enter to skip to next\r\n"
-    );
-
-    stdin().read_line(&mut refresh_token).unwrap();
-    trim(&mut refresh_token);
-
-    if refresh_token.is_empty() {
-        println!("Please input your uuid and press enter to continue.\r\n
-You can check this link below to see how to get one paired with a two_step code which will be needed later\r\n
-https://tusticles.com/psn-php/first_login.html\r\n");
-
-        stdin().read_line(&mut uuid).unwrap();
-        trim(&mut uuid);
-
-        println!("Please input your two_step code to continue.\r\n");
-
-        stdin().read_line(&mut two_step).unwrap();
-        trim(&mut two_step);
-    }
-
-    println!("Please wait for the PSN network to response. The program will panic if there is an error occur\r\n");
+    let (refresh_token, uuid, two_step) = collect_input();
 
     let mut psn =
         // construct a new PSN struct, add args and call auth to generate tokens which are need to call other PSN APIs.
@@ -104,22 +79,53 @@ https://tusticles.com/psn-php/first_login.html\r\n");
         None => println!("\r\nIt seems this account doesn't have any threads so thread detail example is skipped")
     }
 
-    tokio::spawn(async move {
-        // store apis don't need authentication.
-        let psn_no_auth = PSN::new();
-        let search: StoreSearchResult = psn_no_auth
-            .search_store_items("en", "us", "20", "ace combat")
-            .await
-            .unwrap_or_else(|e| panic!("{:?}", e));
+    // store apis don't need authentication.
+    let psn_no_auth = PSN::new();
+    let search: StoreSearchResult = psn_no_auth
+        .search_store_items("en", "us", "20", "ace combat")
+        .await
+        .unwrap_or_else(|e| panic!("{:?}", e));
 
-        println!("Got example PSN store response: {:#?}", search);
-    });
+    println!("Got example PSN store response: {:#?}", search);
 
     println!("\r\n\r\nThe example is finished and all api endpoints are good");
     println!("\r\n\r\npsn struct is dropped at this point so it's better to store your access_token and refresh_token locally to make sure they can be reused");
     println!("Your psn info is : {:#?}", psn);
 
     Ok(())
+}
+
+
+// helper function to collect input
+fn collect_input() -> (String, String, String) {
+    let mut refresh_token = String::new();
+    let mut uuid = String::new();
+    let mut two_step = String::new();
+
+    println!(
+        "Pleas input your refresh_token if you already have one. Press enter to skip to next\r\n"
+    );
+
+    stdin().read_line(&mut refresh_token).unwrap();
+    trim(&mut refresh_token);
+
+    if refresh_token.is_empty() {
+        println!("Please input your uuid and press enter to continue.\r\n
+You can check this link below to see how to get one paired with a two_step code which will be needed later\r\n
+https://tusticles.com/psn-php/first_login.html\r\n");
+
+        stdin().read_line(&mut uuid).unwrap();
+        trim(&mut uuid);
+
+        println!("Please input your two_step code to continue.\r\n");
+
+        stdin().read_line(&mut two_step).unwrap();
+        trim(&mut two_step);
+    }
+
+    println!("Please wait for the PSN network to response. The program will panic if there is an error occur\r\n");
+
+    (refresh_token, uuid, two_step)
 }
 
 fn trim(s: &mut String) {

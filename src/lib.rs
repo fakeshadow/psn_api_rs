@@ -1,5 +1,5 @@
 //! # A simple PSN API wrapper.
-//! It uses an async http client(actix-web-client in this case) to communicate wih the official PSN API.
+//! It uses an async http client(hyper::Client in this case) to communicate wih the official PSN API.
 //!
 //! Some basics:
 //! The crate use a pair of `uuid` and `two_step` code to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
@@ -60,9 +60,22 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "client")]
 use derive_more::Display;
+#[cfg(feature = "client")]
 use futures::TryStreamExt;
-use hyper::{Body, Client, Request};
+#[cfg(feature = "client")]
+use hyper::{
+    Body,
+    Client,
+    client::{
+        connect::dns::GaiResolver,
+        HttpConnector,
+    },
+    Request,
+};
+#[cfg(feature = "client")]
+use hyper_tls::HttpsConnector;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
 
@@ -606,7 +619,7 @@ pub struct PSN {
 }
 
 /// You can override `PSNRequest` trait to impl your own error type.
-#[cfg(feature = "hyper")]
+#[cfg(feature = "client")]
 #[derive(Debug, Display)]
 pub enum PSNError {
     #[display(fmt = "No Access Token is found. Please login in first")]
@@ -717,12 +730,11 @@ impl PSN {
 }
 
 /// You can override `PSNRequest` trait to impl your preferred http client
-///
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
 pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     type Error;
 
-    fn auth(mut self) -> Pin<Box<dyn Future<Output=Result<Self, Self::Error>> + Send >> {
+    fn auth(mut self) -> Pin<Box<dyn Future<Output=Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
             if self.gen_access_and_refresh().await.is_err() {
                 self.gen_access_from_refresh().await?;
@@ -866,7 +878,6 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-
     fn send_message<'a>(
         &'a self,
         msg: Option<&'a str>,
@@ -900,26 +911,35 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     }
 }
 
-#[cfg(feature = "hyper")]
+#[cfg(feature = "client")]
+impl PSN {
+    /// default http client `hyper::Client` with `hyper-tls` as https connector
+    fn build_cli() -> Client<HttpsConnector<HttpConnector<GaiResolver>>> {
+        let https = HttpsConnector::new().unwrap();
+        Client::builder().build::<_, Body>(https)
+    }
+}
+
+#[cfg(feature = "client")]
 impl PSNRequest for PSN {
     type Error = PSNError;
     fn gen_access_and_refresh<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
         Box::pin(async move {
-            let client = Client::new();
+            let client = PSN::build_cli();
 
-            let string = serde_urlencoded::to_string(&self.np_sso_url_encode())
+            let body = serde_urlencoded::to_string(&self.np_sso_url_encode())
                 .expect("This should not fail");
 
             let req = Request::builder()
-                .method("POST")
+                .method(hyper::Method::POST)
                 .uri(urls::NP_SSO_ENTRY)
                 .header(
                     hyper::header::CONTENT_TYPE,
                     "application/x-www-form-urlencoded",
                 )
-                .body(Body::from(string))
+                .body(Body::from(body))
                 .expect("failed to build request which should not happen");
 
             // User uuid and two_step code to make a post call.
@@ -935,10 +955,9 @@ impl PSNRequest for PSN {
             // Extract the npsso cookie as string from the response json body.
             let npsso: Npsso = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
 
-
             // Use the npsso we get as a cookie header.
             let req = Request::builder()
-                .method("GET")
+                .method(hyper::Method::GET)
                 .uri(urls::GRANT_CODE_ENTRY)
                 .header("Cookie", format!("npsso={}", npsso.npsso))
                 .header(
@@ -950,24 +969,24 @@ impl PSNRequest for PSN {
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
 
-            // Extract the "x-np-grant-code" from the response header and parse it to string.
+            // Extract the "x-np-grant-code" from the response header and parse it to &str.
             let grant = match res.headers().get("x-np-grant-code") {
-                Some(h) => h.to_str().unwrap().to_owned(),
+                Some(h) => h.to_str().unwrap(),
                 None => return Err(PSNError::NoGrantCode),
             };
 
-            let string = serde_urlencoded::to_string(&PSN::oauth_token_encode(grant))
+            let body = serde_urlencoded::to_string(&PSN::oauth_token_encode(grant))
                 .expect("This should not fail");
 
             // Use the grant code to make another post request to finish the authentication process.
             let req = Request::builder()
-                .method("POST")
+                .method(hyper::Method::POST)
                 .uri(urls::OAUTH_TOKEN_ENTRY)
                 .header(
                     hyper::header::CONTENT_TYPE,
                     "application/x-www-form-urlencoded",
                 )
-                .body(Body::from(string))
+                .body(Body::from(body))
                 .expect("failed to build request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
@@ -980,7 +999,6 @@ impl PSNRequest for PSN {
             self.access_token = tokens.access_token;
             self.refresh_token = tokens.refresh_token;
             Ok(())
-
         })
     }
 
@@ -990,19 +1008,19 @@ impl PSNRequest for PSN {
         Box::pin(async move {
             // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
             // We only need the new access token from response.(refresh token can't be refreshed.)
-            let client = Client::new();
+            let client = PSN::build_cli();
 
-            let string = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
+            let body = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
                 .expect("This should not fail");
 
             let req = Request::builder()
-                .method("POST")
+                .method(hyper::Method::POST)
                 .uri(urls::OAUTH_TOKEN_ENTRY)
                 .header(
                     hyper::header::CONTENT_TYPE,
                     "application/x-www-form-urlencoded",
                 )
-                .body(Body::from(string))
+                .body(Body::from(body))
                 .expect("failed to build request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
@@ -1014,7 +1032,6 @@ impl PSNRequest for PSN {
             self.last_refresh_at = Some(Instant::now());
             self.access_token = tokens.access_token;
             Ok(())
-
         })
     }
 
@@ -1028,15 +1045,23 @@ impl PSNRequest for PSN {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be application/json.
             async move {
-                let client = Client::new();
+                let client = PSN::build_cli();
 
-                let req = Request::builder()
-                    .method("GET")
-                    .uri(url)
-                    .header(hyper::header::CONTENT_TYPE, "application/json")
-                    .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
-                    .body(Body::empty())
-                    .expect("failed to build request which should not happen");
+                // there are api endpoints that don't need access_token to access so we only add bearer token when we have it.
+                let req = match self.access_token.as_ref() {
+                    Some(token) => Request::builder()
+                        .method(hyper::Method::GET)
+                        .uri(url)
+                        .header(hyper::header::CONTENT_TYPE, "application/json")
+                        .header(hyper::header::AUTHORIZATION, format!("Bearer {}", token))
+                        .body(Body::empty()),
+                    None => Request::builder()
+                        .method(hyper::Method::GET)
+                        .uri(url)
+                        .header(hyper::header::CONTENT_TYPE, "application/json")
+                        .body(Body::empty())
+                };
+                let req = req.expect("failed to build request which should not happen");
 
                 let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
                 let code = res.status();
@@ -1048,7 +1073,6 @@ impl PSNRequest for PSN {
                 } else {
                     serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)
                 }
-
             },
         )
     }
@@ -1058,10 +1082,10 @@ impl PSNRequest for PSN {
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
         Box::pin(async move {
-            let client = Client::new();
+            let client = PSN::build_cli();
 
             let req = Request::builder()
-                .method("DELETE")
+                .method(hyper::Method::DELETE)
                 .uri(url)
                 .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
                 .body(Body::empty())
@@ -1077,7 +1101,6 @@ impl PSNRequest for PSN {
             } else {
                 Ok(())
             }
-
         })
     }
 
@@ -1090,7 +1113,7 @@ impl PSNRequest for PSN {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be multipart/form-data.
             async move {
-                let client = Client::new();
+                let client = PSN::build_cli();
 
                 let req = Request::builder()
                     .method("POST")
@@ -1110,7 +1133,6 @@ impl PSNRequest for PSN {
                 } else {
                     Ok(())
                 }
-
             },
         )
     }
@@ -1129,11 +1151,11 @@ impl PSNRequest for PSN {
 /// }
 /// ```
 pub trait EncodeUrl {
-    fn np_sso_url_encode(&self) -> [(&'static str, String); 4];
+    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4];
 
-    fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6];
+    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6];
 
-    fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7];
+    fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7];
 
     fn profile_encode(&self) -> String;
 
@@ -1169,53 +1191,52 @@ pub trait EncodeUrl {
 }
 
 impl EncodeUrl for PSN {
-    fn np_sso_url_encode(&self) -> [(&'static str, String); 4] {
+    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4] {
         let uuid = self
             .uuid
             .as_ref()
-            .map(Clone::clone)
-            .expect("uuid is not a proper string");
+            .map(String::as_str)
+            .unwrap_or("lazy uncheck");
         let two_step = self
             .two_step
             .as_ref()
-            .map(Clone::clone)
-            .expect("two_step code is not a proper string");
+            .map(String::as_str)
+            .unwrap_or("lazy uncheck");
 
         [
-            ("authentication_type", "two_step".to_owned()),
-            ("client_id", CLIENT_ID.to_owned()),
+            ("authentication_type", "two_step"),
+            ("client_id", CLIENT_ID),
             ("ticket_uuid", uuid),
             ("code", two_step),
         ]
     }
 
-    fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6] {
+    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6] {
         [
-            ("client_id", CLIENT_ID.to_owned()),
-            ("client_secret", CLIENT_SECRET.to_owned()),
-            ("duid", DUID.to_owned()),
-            ("scope", SCOPE.to_owned()),
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("duid", DUID),
+            ("scope", SCOPE),
             ("code", grant_code),
-            ("grant_type", "authorization_code".to_owned()),
+            ("grant_type", "authorization_code"),
         ]
     }
 
-    fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7] {
+    fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7] {
         [
-            ("app_context", "inapp_ios".to_owned()),
-            ("client_id", CLIENT_ID.to_owned()),
-            ("client_secret", CLIENT_SECRET.to_owned()),
-            ("duid", DUID.to_owned()),
-            ("scope", SCOPE.to_owned()),
+            ("app_context", "inapp_ios"),
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("duid", DUID),
+            ("scope", SCOPE),
             (
                 "refresh_token",
                 self.refresh_token
                     .as_ref()
                     .map(String::as_str)
-                    .unwrap_or("lazy uncheck")
-                    .to_owned(),
+                    .unwrap_or("lazy uncheck"),
             ),
-            ("grant_type", "refresh_token".to_owned()),
+            ("grant_type", "refresh_token"),
         ]
     }
 
@@ -1375,13 +1396,13 @@ fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
     result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
 }
 
-#[cfg(feature = "hyper")]
+#[cfg(feature = "client")]
 #[derive(Deserialize)]
 struct Npsso {
     npsso: String,
 }
 
-#[cfg(feature = "hyper")]
+#[cfg(feature = "client")]
 #[derive(Deserialize)]
 struct Tokens {
     access_token: Option<String>,
