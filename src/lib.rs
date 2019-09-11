@@ -66,13 +66,8 @@ use derive_more::Display;
 use futures::TryStreamExt;
 #[cfg(feature = "client")]
 use hyper::{
-    Body,
-    Client,
-    client::{
-        connect::dns::GaiResolver,
-        HttpConnector,
-    },
-    Request,
+    client::{connect::dns::GaiResolver, HttpConnector},
+    Body, Client, Request,
 };
 #[cfg(feature = "client")]
 use hyper_tls::HttpsConnector;
@@ -734,7 +729,7 @@ impl PSN {
 pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     type Error;
 
-    fn auth(mut self) -> Pin<Box<dyn Future<Output=Result<Self, Self::Error>> + Send>> {
+    fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
             if self.gen_access_and_refresh().await.is_err() {
                 self.gen_access_from_refresh().await?;
@@ -746,41 +741,43 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
     fn gen_access_and_refresh<'a>(
         &'a mut self,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
     fn gen_access_from_refresh<'a>(
         &'a mut self,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
     fn get_by_url_encode<'a, T: DeserializeOwned + 'static>(
         &'a self,
-        url: &str,
-    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>;
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>;
 
     /// A generic http del handle function. return status 204 as successful response.
     fn del_by_url_encode<'a>(
         &'a self,
-        url: &str,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
     fn post_by_multipart<'a>(
         &'a self,
-        boundary: &str,
-        url: &str,
+        boundary: &'a str,
+        url: &'a str,
         body: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
 
     /// need to `add_online_id` before call this method.
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_rofile()
     /// ```
-    fn get_profile<'a, T>(&'a self) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_profile<'a, T>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(async move {
             let url = self.profile_encode();
@@ -795,9 +792,9 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     fn get_titles<'a, T>(
         &'a self,
         offset: u32,
-    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(async move {
             let url = self.trophy_summary_encode(offset);
@@ -809,9 +806,11 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
     /// ```
-    fn get_trophy_set<'a, T>(&'a self) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+    fn get_trophy_set<'a, T>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(async move {
             let url = self.trophy_set_encode();
@@ -824,9 +823,9 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     fn get_message_threads<'a, T>(
         &'a self,
         offset: u32,
-    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(async move {
             let url = self.message_threads_encode(offset);
@@ -838,9 +837,9 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     fn get_message_thread<'a, T>(
         &'a self,
         thread_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(async move {
             let url = self.message_thread_encode(thread_id);
@@ -855,21 +854,22 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     /// ```
     fn generate_message_thread<'a>(
         &'a self,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let body = self.message_multipart_body(boundary.as_str(), None, None);
             let url = self.generate_thread_encode();
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
-                .await
+                .await?;
+            Ok(())
         })
     }
 
     fn leave_message_thread<'a>(
         &'a self,
         thread_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
         Box::pin(async move {
             let url = self.leave_message_thread_encode(thread_id);
             self.del_by_url_encode(url.as_str()).await
@@ -883,14 +883,15 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
         msg: Option<&'a str>,
         path: Option<&'a str>,
         thread_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
             let body = self.message_multipart_body(&boundary, msg, path);
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
-                .await
+                .await?;
+            Ok(())
         })
     }
 
@@ -900,9 +901,9 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
         region: &'a str,
         age: &'a str,
         name: &'a str,
-    ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(async move {
             let url = Self::store_search_encode(lang, region, age, name);
@@ -925,7 +926,7 @@ impl PSNRequest for PSN {
     type Error = PSNError;
     fn gen_access_and_refresh<'a>(
         &'a mut self,
-    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
         Box::pin(async move {
             let client = PSN::build_cli();
 
@@ -945,7 +946,11 @@ impl PSNRequest for PSN {
             // User uuid and two_step code to make a post call.
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+            let body = res
+                .into_body()
+                .try_concat()
+                .await
+                .map_err(|_| PSNError::PayLoad)?;
 
             /*
                 At this point the uuid and two_step code are consumed and can't be used anymore.
@@ -990,7 +995,11 @@ impl PSNRequest for PSN {
                 .expect("failed to build request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+            let body = res
+                .into_body()
+                .try_concat()
+                .await
+                .map_err(|_| PSNError::PayLoad)?;
 
             // Extract the access_token and refresh_token from the response body json.
             let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
@@ -1004,7 +1013,7 @@ impl PSNRequest for PSN {
 
     fn gen_access_from_refresh<'a>(
         &'a mut self,
-    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
         Box::pin(async move {
             // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
             // We only need the new access token from response.(refresh token can't be refreshed.)
@@ -1024,7 +1033,11 @@ impl PSNRequest for PSN {
                 .expect("failed to build request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+            let body = res
+                .into_body()
+                .try_concat()
+                .await
+                .map_err(|_| PSNError::PayLoad)?;
 
             // Extract the access_token and refresh_token from the response body json.
             let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
@@ -1037,10 +1050,10 @@ impl PSNRequest for PSN {
 
     fn get_by_url_encode<'a, T>(
         &'a self,
-        url: &str,
-    ) -> Pin<Box<dyn Future<Output=Result<T, PSNError>> + Send + 'a>>
-        where
-            T: DeserializeOwned + 'static,
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<T, PSNError>> + Send + 'a>>
+    where
+        T: DeserializeOwned + 'static,
     {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be application/json.
@@ -1059,16 +1072,21 @@ impl PSNRequest for PSN {
                         .method(hyper::Method::GET)
                         .uri(url)
                         .header(hyper::header::CONTENT_TYPE, "application/json")
-                        .body(Body::empty())
+                        .body(Body::empty()),
                 };
                 let req = req.expect("failed to build request which should not happen");
 
                 let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
                 let code = res.status();
-                let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+                let body = res
+                    .into_body()
+                    .try_concat()
+                    .await
+                    .map_err(|_| PSNError::PayLoad)?;
 
                 if code != 200 {
-                    let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+                    let e: PSNResponseError =
+                        serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
                     Err(PSNError::FromPSN(e.error.message))
                 } else {
                     serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)
@@ -1079,24 +1097,32 @@ impl PSNRequest for PSN {
 
     fn del_by_url_encode<'a>(
         &'a self,
-        url: &str,
-    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+        url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
         Box::pin(async move {
             let client = PSN::build_cli();
 
             let req = Request::builder()
                 .method(hyper::Method::DELETE)
                 .uri(url)
-                .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
+                .header(
+                    hyper::header::AUTHORIZATION,
+                    format!("Bearer {}", self.access_token.as_ref().unwrap()),
+                )
                 .body(Body::empty())
                 .expect("failed to build request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
             let code = res.status();
-            let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+            let body = res
+                .into_body()
+                .try_concat()
+                .await
+                .map_err(|_| PSNError::PayLoad)?;
 
             if code != 204 {
-                let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+                let e: PSNResponseError =
+                    serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
                 Err(PSNError::FromPSN(e.error.message))
             } else {
                 Ok(())
@@ -1106,10 +1132,10 @@ impl PSNRequest for PSN {
 
     fn post_by_multipart<'a>(
         &'a self,
-        boundary: &str,
-        url: &str,
+        boundary: &'a str,
+        url: &'a str,
         body: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be multipart/form-data.
             async move {
@@ -1118,17 +1144,28 @@ impl PSNRequest for PSN {
                 let req = Request::builder()
                     .method("POST")
                     .uri(url)
-                    .header(hyper::header::CONTENT_TYPE, format!("multipart/form-data; boundary={}", boundary))
-                    .header(hyper::header::AUTHORIZATION, format!("Bearer {}", self.access_token.as_ref().unwrap()))
+                    .header(
+                        hyper::header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={}", boundary),
+                    )
+                    .header(
+                        hyper::header::AUTHORIZATION,
+                        format!("Bearer {}", self.access_token.as_ref().unwrap()),
+                    )
                     .body(Body::from(body))
                     .expect("failed to build request which should not happen");
 
                 let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
                 let code = res.status();
-                let body = res.into_body().try_concat().await.map_err(|_| PSNError::PayLoad)?;
+                let body = res
+                    .into_body()
+                    .try_concat()
+                    .await
+                    .map_err(|_| PSNError::PayLoad)?;
 
                 if code != 200 {
-                    let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+                    let e: PSNResponseError =
+                        serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
                     Err(PSNError::FromPSN(e.error.message))
                 } else {
                     Ok(())
@@ -1351,7 +1388,7 @@ impl MultiPart for PSN {
                 self.online_id.as_ref().unwrap(),
                 self.self_online_id.as_ref(),
             ))
-                .unwrap_or_else(|_| "".to_owned());
+            .unwrap_or_else(|_| "".to_owned());
 
             write_string(&mut result, boundary, "threadDetail", msg.as_str());
             return result;
