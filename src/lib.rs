@@ -756,21 +756,21 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
     fn get_by_url_encode<'a, T: DeserializeOwned + 'static>(
         &'a self,
-        url: &'a str,
+        url: &str,
     ) -> Pin<Box<dyn Future<Output=Result<T, Self::Error>> + Send + 'a>>;
 
     /// A generic http del handle function. return status 204 as successful response.
     fn del_by_url_encode<'a>(
         &'a self,
-        url: &'a str,
+        url: &str,
     ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
     fn post_by_multipart<'a>(
         &'a self,
-        boundary: &'a str,
-        url: &'a str,
+        boundary: &str,
+        url: &str,
         body: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output=Result<(), Self::Error>> + Send + 'a>>;
 
@@ -887,7 +887,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
-            let body = self.message_multipart_body(boundary.as_str(), msg, path);
+            let body = self.message_multipart_body(&boundary, msg, path);
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
                 .await
@@ -1037,7 +1037,7 @@ impl PSNRequest for PSN {
 
     fn get_by_url_encode<'a, T>(
         &'a self,
-        url: &'a str,
+        url: &str,
     ) -> Pin<Box<dyn Future<Output=Result<T, PSNError>> + Send + 'a>>
         where
             T: DeserializeOwned + 'static,
@@ -1079,7 +1079,7 @@ impl PSNRequest for PSN {
 
     fn del_by_url_encode<'a>(
         &'a self,
-        url: &'a str,
+        url: &str,
     ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
         Box::pin(async move {
             let client = PSN::build_cli();
@@ -1106,8 +1106,8 @@ impl PSNRequest for PSN {
 
     fn post_by_multipart<'a>(
         &'a self,
-        boundary: &'a str,
-        url: &'a str,
+        boundary: &str,
+        url: &str,
         body: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output=Result<(), PSNError>> + Send + 'a>> {
         Box::pin(

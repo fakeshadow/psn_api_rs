@@ -24,8 +24,8 @@ hyper = { version = "0.13.0-alpha.1", optional = true}
 hyper-tls = { git = "https://github.com/hyperium/hyper-tls", optional = true}
 futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "compat", "async-await"] , optional = true }
 rand = "0.7.0"
-serde = "1.0.98"
-serde_derive = "1.0.98"
+serde = "1.0.100"
+serde_derive = "1.0.100"
 serde_json = "1.0.40"
 serde_urlencoded = "0.6.1"
 
