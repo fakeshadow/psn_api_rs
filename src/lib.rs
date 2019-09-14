@@ -631,6 +631,15 @@ pub enum PSNError {
     Tokens,
     #[display(fmt = "Error from PSN response: {}", _0)]
     FromPSN(String),
+    #[display(fmt = "Error from Local: {}", _0)]
+    FromLocal(std::io::Error),
+}
+
+#[cfg(feature = "client")]
+impl From<std::io::Error> for PSNError {
+    fn from(e: std::io::Error) -> Self {
+        PSNError::FromLocal(e)
+    }
 }
 
 impl Default for PSN {
@@ -724,10 +733,20 @@ impl PSN {
     }
 }
 
+// type alias to stop clippy from complaining
+type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
+
 /// You can override `PSNRequest` trait to impl your preferred http client
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
-pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
-    type Error;
+/// methods with multiple lifetimes always use args with shorter lifetime than self and the returned future.
+/// associate type `Error` need to impl `From<std::io::Error>` trait as we open local files in `message_multipart_body` method when sending image message.
+pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
+    type Error: From<std::io::Error>;
+
+    /// getter used in `PSNRequest::message_multipart_body` method.
+    fn online_id(&self) -> &str;
+    /// getter used in `PSNRequest::message_multipart_body` method.
+    fn self_online_id(&self) -> &str;
 
     fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
@@ -749,25 +768,25 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
-    fn get_by_url_encode<'a, T: DeserializeOwned + 'static>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>;
+    fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
+        &'s self,
+        url: &'u str,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>;
 
     /// A generic http del handle function. return status 204 as successful response.
-    fn del_by_url_encode<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    fn del_by_url_encode<'s, 'u: 's>(
+        &'s self,
+        url: &'u str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
-    fn post_by_multipart<'a>(
-        &'a self,
-        boundary: &'a str,
-        url: &'a str,
+    fn post_by_multipart<'s, 't: 's>(
+        &'s self,
+        boundary: &'t str,
+        url: &'t str,
         body: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>>;
 
     /// need to `add_online_id` before call this method.
     /// ```rust
@@ -834,12 +853,13 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     }
 
     /// return message thread detail of the `ThreadId`.
-    fn get_message_thread<'a, T>(
-        &'a self,
-        thread_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    fn get_message_thread<'s, 't, T>(
+        &'s self,
+        thread_id: &'t str,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>
     where
         T: DeserializeOwned + 'static,
+        't: 's,
     {
         Box::pin(async move {
             let url = self.message_thread_encode(thread_id);
@@ -857,7 +877,9 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
-            let body = self.message_multipart_body(boundary.as_str(), None, None);
+            let body = self
+                .message_multipart_body(boundary.as_str(), None, None)
+                .await?;
             let url = self.generate_thread_encode();
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
@@ -878,16 +900,16 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message<'a>(
-        &'a self,
-        msg: Option<&'a str>,
-        path: Option<&'a str>,
-        thread_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+    fn send_message<'s, 't: 's>(
+        &'s self,
+        msg: Option<&'t str>,
+        path: Option<&'t str>,
+        thread_id: &'t str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
-            let body = self.message_multipart_body(&boundary, msg, path);
+            let body = self.message_multipart_body(&boundary, msg, path).await?;
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
                 .await?;
@@ -895,19 +917,66 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + MultiPart + 'static {
         })
     }
 
-    fn search_store_items<'a, T>(
-        &'a self,
-        lang: &'a str,
-        region: &'a str,
-        age: &'a str,
-        name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
+    fn search_store_items<'s, 't, T>(
+        &'s self,
+        lang: &'t str,
+        region: &'t str,
+        age: &'t str,
+        name: &'t str,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>
     where
         T: DeserializeOwned + 'static,
+        't: 's,
     {
         Box::pin(async move {
             let url = Self::store_search_encode(lang, region, age, name);
             self.get_by_url_encode(url.as_str()).await
+        })
+    }
+
+    /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
+    /// pass both as `None` will result in generating a new message thread body.
+    fn message_multipart_body<'s, 'a: 's>(
+        &'s self,
+        boundary: &'a str,
+        msg: Option<&'a str>,
+        path: Option<&'a str>,
+    ) -> PSNFuture<'s, Result<Vec<u8>, Self::Error>> {
+        Box::pin(async move {
+            let mut result: Vec<u8> = Vec::new();
+
+            if msg.is_none() && path.is_none() {
+                let msg = serde_json::to_string(&GenerateNewThread::new(
+                    self.online_id(),
+                    self.self_online_id(),
+                ))
+                .unwrap_or_else(|_| "".to_owned());
+
+                write_string(&mut result, boundary, "threadDetail", msg.as_str());
+                return Ok(result);
+            };
+
+            let event_category = if path.is_some() { 3u8 } else { 1 };
+            let msg = serde_json::to_string(&SendMessage::new(msg, event_category))
+                .unwrap_or_else(|_| "".to_owned());
+
+            write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
+
+            if let Some(path) = path {
+                let mut file_data = tokio_fs::read(path).await.map_err(Self::Error::from)?;
+
+                result.extend_from_slice(
+                    "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
+                );
+                result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
+                result.extend_from_slice(
+                    format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
+                );
+                result.append(&mut file_data);
+                result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
+            }
+
+            Ok(result)
         })
     }
 }
@@ -924,6 +993,14 @@ impl PSN {
 #[cfg(feature = "client")]
 impl PSNRequest for PSN {
     type Error = PSNError;
+    fn online_id(&self) -> &str {
+        self.online_id.as_ref().unwrap()
+    }
+
+    fn self_online_id(&self) -> &str {
+        self.self_online_id.as_str()
+    }
+
     fn gen_access_and_refresh<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
@@ -1048,12 +1125,13 @@ impl PSNRequest for PSN {
         })
     }
 
-    fn get_by_url_encode<'a, T>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, PSNError>> + Send + 'a>>
+    fn get_by_url_encode<'s, 'u, T>(
+        &'s self,
+        url: &'u str,
+    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>
     where
         T: DeserializeOwned + 'static,
+        'u: 's,
     {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be application/json.
@@ -1095,10 +1173,10 @@ impl PSNRequest for PSN {
         )
     }
 
-    fn del_by_url_encode<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
+    fn del_by_url_encode<'s, 'u: 's>(
+        &'s self,
+        url: &'u str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>> {
         Box::pin(async move {
             let client = PSN::build_cli();
 
@@ -1130,12 +1208,12 @@ impl PSNRequest for PSN {
         })
     }
 
-    fn post_by_multipart<'a>(
-        &'a self,
-        boundary: &'a str,
-        url: &'a str,
+    fn post_by_multipart<'s, 't: 's>(
+        &'s self,
+        boundary: &'t str,
+        url: &'t str,
         body: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>> {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be multipart/form-data.
             async move {
@@ -1224,6 +1302,21 @@ pub trait EncodeUrl {
             "{}{}/{}/{}/resolve/{}",
             STORE_ENTRY, lang, region, age, game_id
         )
+    }
+
+    /// boundary is used to when making multipart request to PSN.
+    fn generate_boundary() -> String {
+        let mut boundary = String::with_capacity(50);
+        boundary.push_str("--------------------------");
+
+        let s: String = rand::thread_rng()
+            .sample_iter(Alphanumeric)
+            .take(24)
+            .collect();
+
+        boundary.push_str(s.as_str());
+
+        boundary
     }
 }
 
@@ -1346,80 +1439,6 @@ impl EncodeUrl for PSN {
             MESSAGE_THREAD_ENTRY,
             thread_id
         )
-    }
-}
-
-pub trait MultiPart {
-    /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
-    /// pass both as `None` will result in generating a new message thread body.
-    fn message_multipart_body(
-        &self,
-        boundary: &str,
-        message: Option<&str>,
-        file_path: Option<&str>,
-    ) -> Vec<u8>;
-
-    fn generate_boundary() -> String {
-        let mut boundary = String::with_capacity(50);
-        boundary.push_str("--------------------------");
-
-        let s: String = rand::thread_rng()
-            .sample_iter(Alphanumeric)
-            .take(24)
-            .collect();
-
-        boundary.push_str(s.as_str());
-
-        boundary
-    }
-}
-
-impl MultiPart for PSN {
-    fn message_multipart_body(
-        &self,
-        boundary: &str,
-        msg: Option<&str>,
-        path: Option<&str>,
-    ) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
-
-        if msg.is_none() && path.is_none() {
-            let msg = serde_json::to_string(&GenerateNewThread::new(
-                self.online_id.as_ref().unwrap(),
-                self.self_online_id.as_ref(),
-            ))
-            .unwrap_or_else(|_| "".to_owned());
-
-            write_string(&mut result, boundary, "threadDetail", msg.as_str());
-            return result;
-        };
-
-        let event_category = if path.is_some() { 3u8 } else { 1 };
-        let msg = serde_json::to_string(&SendMessage::new(msg, event_category))
-            .unwrap_or_else(|_| "".to_owned());
-
-        write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
-
-        if let Some(path) = path {
-            use std::io::prelude::*;
-
-            //ToDo: handle error and write file async.
-            let mut f = std::fs::File::open(path).unwrap();
-            let mut file_data = Vec::new();
-            f.read_to_end(&mut file_data).unwrap();
-
-            result.extend_from_slice(
-                "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
-            );
-            result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
-            result.extend_from_slice(
-                format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
-            );
-            result.append(&mut file_data);
-            result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
-        }
-
-        result
     }
 }
 
