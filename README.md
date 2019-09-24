@@ -6,8 +6,8 @@
 
 #### Usage:
 add 
-`psn_api_rs = { git = "https://github.com/fakeshadow/psn_api_rs.git", branch = "std-future", features= [ "client" ] }`  to `cargo.toml`.<br>  
-remove `features = ["client"]` if you don't want to use build in http client.(See more in documentation)
+`psn_api_rs = { git = "https://github.com/fakeshadow/psn_api_rs.git", branch = "std-future" }`  to `cargo.toml`.<br>  
+add `no-default-features = true` if you don't want to use build in http client.(See more in documentation)
 
 <br>
 

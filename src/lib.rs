@@ -56,20 +56,21 @@
 #[macro_use]
 extern crate serde_derive;
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 use derive_more::Display;
-#[cfg(feature = "client")]
-use futures::TryStreamExt;
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
+use futures::{TryFutureExt, TryStreamExt};
+#[cfg(feature = "default")]
 use hyper::{
-    client::{connect::dns::GaiResolver, HttpConnector},
-    Body, Client, Request,
+    Body,
+    client::{connect::dns::GaiResolver, HttpConnector}, Client, header, Method, Request,
 };
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 use hyper_tls::HttpsConnector;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
@@ -95,7 +96,6 @@ const USERS_ENTRY: &str = "-prof.np.community.playstation.net/userProfile/v1/use
 const USER_TROPHY_ENTRY: &str = "-tpy.np.community.playstation.net/trophy/v1/trophyTitles/";
 const MESSAGE_THREAD_ENTRY: &str = "-gmsg.np.community.playstation.net/groupMessaging/v1/threads";
 const STORE_ENTRY: &str = "https://store.playstation.com/valkyrie-api/";
-
 //const ACTIVITY_ENTRY: &'static str = "https://activity.api.np.km.playstation.net/activity/api/";
 
 const CLIENT_ID: &str = "b7cbf451-6bb6-4a5a-8913-71e61f462787";
@@ -614,7 +614,7 @@ pub struct PSN {
 }
 
 /// You can override `PSNRequest` trait to impl your own error type.
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 #[derive(Debug, Display)]
 pub enum PSNError {
     #[display(fmt = "No Access Token is found. Please login in first")]
@@ -632,14 +632,7 @@ pub enum PSNError {
     #[display(fmt = "Error from PSN response: {}", _0)]
     FromPSN(String),
     #[display(fmt = "Error from Local: {}", _0)]
-    FromLocal(std::io::Error),
-}
-
-#[cfg(feature = "client")]
-impl From<std::io::Error> for PSNError {
-    fn from(e: std::io::Error) -> Self {
-        PSNError::FromLocal(e)
-    }
+    FromStd(std::io::Error),
 }
 
 impl Default for PSN {
@@ -733,22 +726,21 @@ impl PSN {
     }
 }
 
-// type alias to stop clippy from complaining
-type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
+/// type alias to stop clippy from complaining
+pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output=T> + Send + 's>>;
 
 /// You can override `PSNRequest` trait to impl your preferred http client
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
 /// methods with multiple lifetimes always use args with shorter lifetime than self and the returned future.
-/// associate type `Error` need to impl `From<std::io::Error>` trait as we open local files in `message_multipart_body` method when sending image message.
 pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
-    type Error: From<std::io::Error>;
+    type Error;
 
     /// getter used in `PSNRequest::message_multipart_body` method.
     fn online_id(&self) -> &str;
     /// getter used in `PSNRequest::message_multipart_body` method.
     fn self_online_id(&self) -> &str;
 
-    fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
+    fn auth(mut self) -> Pin<Box<dyn Future<Output=Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
             if self.gen_access_and_refresh().await.is_err() {
                 self.gen_access_from_refresh().await?;
@@ -758,46 +750,38 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     }
 
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh<'a>(
-        &'a mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
-    fn gen_access_from_refresh<'a>(
-        &'a mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
     fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
         &'s self,
         url: &'u str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>;
+    ) -> PSNFuture<'s, Result<T, Self::Error>>;
 
     /// A generic http del handle function. return status 204 as successful response.
     fn del_by_url_encode<'s, 'u: 's>(
         &'s self,
         url: &'u str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>>;
+    ) -> PSNFuture<'s, Result<(), Self::Error>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
+    /// return `Cow<'static, [u8]>` because Http Request builder only impl `From` trait for [u8] with `'static` lifetime.
     fn post_by_multipart<'s, 't: 's>(
         &'s self,
         boundary: &'t str,
         url: &'t str,
-        body: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>>;
+        body: Cow<'static, [u8]>,
+    ) -> PSNFuture<'s, Result<(), Self::Error>>;
 
     /// need to `add_online_id` before call this method.
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_rofile()
     /// ```
-    fn get_profile<'a, T>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
-    where
-        T: DeserializeOwned + 'static,
-    {
+    fn get_profile<T: DeserializeOwned + 'static>(&self) -> PSNFuture<Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.profile_encode();
             self.get_by_url_encode(url.as_str()).await
@@ -808,13 +792,10 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).get_titles(0)
     /// ```
-    fn get_titles<'a, T>(
-        &'a self,
+    fn get_titles<T: DeserializeOwned + 'static>(
+        &self,
         offset: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
-    where
-        T: DeserializeOwned + 'static,
-    {
+    ) -> PSNFuture<Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.trophy_summary_encode(offset);
             self.get_by_url_encode(url.as_str()).await
@@ -825,12 +806,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     /// ```rust
     /// PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
     /// ```
-    fn get_trophy_set<'a, T>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
-    where
-        T: DeserializeOwned + 'static,
-    {
+    fn get_trophy_set<T: DeserializeOwned + 'static>(&self) -> PSNFuture<Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.trophy_set_encode();
             self.get_by_url_encode(url.as_str()).await
@@ -839,13 +815,10 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
     /// return message threads of the account you used to login PSN network.
     /// `offset` can't be large than all existing threads count.
-    fn get_message_threads<'a, T>(
-        &'a self,
+    fn get_message_threads<T: DeserializeOwned + 'static>(
+        &self,
         offset: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 'a>>
-    where
-        T: DeserializeOwned + 'static,
-    {
+    ) -> PSNFuture<Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.message_threads_encode(offset);
             self.get_by_url_encode(url.as_str()).await
@@ -853,14 +826,10 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     }
 
     /// return message thread detail of the `ThreadId`.
-    fn get_message_thread<'s, 't, T>(
+    fn get_message_thread<'s, 't: 's, T: DeserializeOwned + 'static>(
         &'s self,
         thread_id: &'t str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>
-    where
-        T: DeserializeOwned + 'static,
-        't: 's,
-    {
+    ) -> PSNFuture<'s, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.message_thread_encode(thread_id);
             self.get_by_url_encode(url.as_str()).await
@@ -872,26 +841,23 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     /// ```rust
     /// PSN::new().set_self_online_id(String::from("NPWR00233")).add_online_id(String::from("123")).generate_message_thread()
     /// ```
-    fn generate_message_thread<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+    fn generate_message_thread(&self) -> PSNFuture<Result<(), Self::Error>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let body = self
-                .message_multipart_body(boundary.as_str(), None, None)
+                .multipart_body(boundary.as_str(), None, None)
                 .await?;
             let url = self.generate_thread_encode();
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
-                .await?;
-            Ok(())
+                .await
         })
     }
 
-    fn leave_message_thread<'a>(
-        &'a self,
-        thread_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>> {
+    fn leave_message_thread<'s, 't: 's>(
+        &'s self,
+        thread_id: &'t str,
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
         Box::pin(async move {
             let url = self.leave_message_thread_encode(thread_id);
             self.del_by_url_encode(url.as_str()).await
@@ -905,29 +871,24 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
         msg: Option<&'t str>,
         path: Option<&'t str>,
         thread_id: &'t str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>> {
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
-            let body = self.message_multipart_body(&boundary, msg, path).await?;
+            let body = self.multipart_body(&boundary, msg, path).await?;
 
             self.post_by_multipart(boundary.as_str(), url.as_str(), body)
-                .await?;
-            Ok(())
+                .await
         })
     }
 
-    fn search_store_items<'s, 't, T>(
+    fn search_store_items<'s, 't: 's, T: DeserializeOwned + 'static>(
         &'s self,
         lang: &'t str,
         region: &'t str,
         age: &'t str,
         name: &'t str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>
-    where
-        T: DeserializeOwned + 'static,
-        't: 's,
-    {
+    ) -> PSNFuture<'s, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = Self::store_search_encode(lang, region, age, name);
             self.get_by_url_encode(url.as_str()).await
@@ -936,12 +897,12 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
     /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
     /// pass both as `None` will result in generating a new message thread body.
-    fn message_multipart_body<'s, 'a: 's>(
+    fn multipart_body<'s, 'a: 's>(
         &'s self,
         boundary: &'a str,
         msg: Option<&'a str>,
         path: Option<&'a str>,
-    ) -> PSNFuture<'s, Result<Vec<u8>, Self::Error>> {
+    ) -> PSNFuture<'s, Result<Cow<'static, [u8]>, Self::Error>> {
         Box::pin(async move {
             let mut result: Vec<u8> = Vec::new();
 
@@ -950,10 +911,10 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
                     self.online_id(),
                     self.self_online_id(),
                 ))
-                .unwrap_or_else(|_| "".to_owned());
+                    .unwrap_or_else(|_| "".to_owned());
 
                 write_string(&mut result, boundary, "threadDetail", msg.as_str());
-                return Ok(result);
+                return Ok(Cow::Owned(result));
             };
 
             let event_category = if path.is_some() { 3u8 } else { 1 };
@@ -963,25 +924,35 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
             write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
 
             if let Some(path) = path {
-                let mut file_data = tokio_fs::read(path).await.map_err(Self::Error::from)?;
+                let mut file_data = Self::read_path(path).await?;
 
                 result.extend_from_slice(
-                    "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
+                    b"Content-Disposition: form-data; name=\"imageData\"\r\n",
                 );
-                result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
+                result.extend_from_slice(b"Content-Type: image/png\r\n");
+
+//                result.extend_from_slice(
+//                    "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
+//                );
+//                result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
+
                 result.extend_from_slice(
                     format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
                 );
-                result.append(&mut file_data);
+                // ToDo: in case extend failed
+                result.extend_from_slice(&mut file_data);
                 result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
             }
 
-            Ok(result)
+            Ok(Cow::Owned(result))
         })
     }
+
+    /// read local file from path and return `Cow<'static, [u8]>` from a future.
+    fn read_path(path: &str) -> PSNFuture<Result<Cow<'static, [u8]>, Self::Error>>;
 }
 
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 impl PSN {
     /// default http client `hyper::Client` with `hyper-tls` as https connector
     fn build_cli() -> Client<HttpsConnector<HttpConnector<GaiResolver>>> {
@@ -990,7 +961,7 @@ impl PSN {
     }
 }
 
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 impl PSNRequest for PSN {
     type Error = PSNError;
     fn online_id(&self) -> &str {
@@ -1001,9 +972,7 @@ impl PSNRequest for PSN {
         self.self_online_id.as_str()
     }
 
-    fn gen_access_and_refresh<'a>(
-        &'a mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
+    fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
         Box::pin(async move {
             let client = PSN::build_cli();
 
@@ -1011,16 +980,13 @@ impl PSNRequest for PSN {
                 .expect("This should not fail");
 
             let req = Request::builder()
-                .method(hyper::Method::POST)
+                .method(Method::POST)
                 .uri(urls::NP_SSO_ENTRY)
-                .header(
-                    hyper::header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
-                .body(Body::from(body))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(body.into())
                 .expect("failed to build request which should not happen");
 
-            // User uuid and two_step code to make a post call.
+            // User uuid and two_step code to make a post request.
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
             let body = res
@@ -1039,13 +1005,10 @@ impl PSNRequest for PSN {
 
             // Use the npsso we get as a cookie header.
             let req = Request::builder()
-                .method(hyper::Method::GET)
+                .method(Method::GET)
                 .uri(urls::GRANT_CODE_ENTRY)
                 .header("Cookie", format!("npsso={}", npsso.npsso))
-                .header(
-                    hyper::header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::empty())
                 .expect("failed to build request which should not happen");
 
@@ -1057,29 +1020,11 @@ impl PSNRequest for PSN {
                 None => return Err(PSNError::NoGrantCode),
             };
 
+            // Use the grant code to make another post request to finish the authentication process.
             let body = serde_urlencoded::to_string(&PSN::oauth_token_encode(grant))
                 .expect("This should not fail");
 
-            // Use the grant code to make another post request to finish the authentication process.
-            let req = Request::builder()
-                .method(hyper::Method::POST)
-                .uri(urls::OAUTH_TOKEN_ENTRY)
-                .header(
-                    hyper::header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
-                .body(Body::from(body))
-                .expect("failed to build request which should not happen");
-
-            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-            let body = res
-                .into_body()
-                .try_concat()
-                .await
-                .map_err(|_| PSNError::PayLoad)?;
-
-            // Extract the access_token and refresh_token from the response body json.
-            let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+            let tokens = gen_tokens_common(&client, body).await?;
 
             self.last_refresh_at = Some(Instant::now());
             self.access_token = tokens.access_token;
@@ -1088,9 +1033,7 @@ impl PSNRequest for PSN {
         })
     }
 
-    fn gen_access_from_refresh<'a>(
-        &'a mut self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PSNError>> + Send + 'a>> {
+    fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
         Box::pin(async move {
             // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
             // We only need the new access token from response.(refresh token can't be refreshed.)
@@ -1099,25 +1042,7 @@ impl PSNRequest for PSN {
             let body = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
                 .expect("This should not fail");
 
-            let req = Request::builder()
-                .method(hyper::Method::POST)
-                .uri(urls::OAUTH_TOKEN_ENTRY)
-                .header(
-                    hyper::header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
-                .body(Body::from(body))
-                .expect("failed to build request which should not happen");
-
-            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-            let body = res
-                .into_body()
-                .try_concat()
-                .await
-                .map_err(|_| PSNError::PayLoad)?;
-
-            // Extract the access_token and refresh_token from the response body json.
-            let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+            let tokens = gen_tokens_common(&client, body).await?;
 
             self.last_refresh_at = Some(Instant::now());
             self.access_token = tokens.access_token;
@@ -1125,34 +1050,29 @@ impl PSNRequest for PSN {
         })
     }
 
-    fn get_by_url_encode<'s, 'u, T>(
+    fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
         &'s self,
         url: &'u str,
-    ) -> Pin<Box<dyn Future<Output = Result<T, Self::Error>> + Send + 's>>
-    where
-        T: DeserializeOwned + 'static,
-        'u: 's,
-    {
+    ) -> PSNFuture<'s, Result<T, Self::Error>> {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be application/json.
             async move {
                 let client = PSN::build_cli();
 
+                let mut req = Request::builder();
+
+                req.method(Method::GET)
+                    .uri(url)
+                    .header(header::CONTENT_TYPE, "application/json");
+
                 // there are api endpoints that don't need access_token to access so we only add bearer token when we have it.
-                let req = match self.access_token.as_ref() {
-                    Some(token) => Request::builder()
-                        .method(hyper::Method::GET)
-                        .uri(url)
-                        .header(hyper::header::CONTENT_TYPE, "application/json")
-                        .header(hyper::header::AUTHORIZATION, format!("Bearer {}", token))
-                        .body(Body::empty()),
-                    None => Request::builder()
-                        .method(hyper::Method::GET)
-                        .uri(url)
-                        .header(hyper::header::CONTENT_TYPE, "application/json")
-                        .body(Body::empty()),
-                };
-                let req = req.expect("failed to build request which should not happen");
+                if let Some(token) = self.access_token.as_ref() {
+                    req.header(header::AUTHORIZATION, format!("Bearer {}", token));
+                }
+
+                let req = req
+                    .body(Body::empty())
+                    .expect("failed to build request which should not happen");
 
                 let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
                 let code = res.status();
@@ -1176,35 +1096,23 @@ impl PSNRequest for PSN {
     fn del_by_url_encode<'s, 'u: 's>(
         &'s self,
         url: &'u str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>> {
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
         Box::pin(async move {
             let client = PSN::build_cli();
 
             let req = Request::builder()
-                .method(hyper::Method::DELETE)
+                .method(Method::DELETE)
                 .uri(url)
                 .header(
-                    hyper::header::AUTHORIZATION,
+                    header::AUTHORIZATION,
                     format!("Bearer {}", self.access_token.as_ref().unwrap()),
                 )
                 .body(Body::empty())
                 .expect("failed to build request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-            let code = res.status();
-            let body = res
-                .into_body()
-                .try_concat()
-                .await
-                .map_err(|_| PSNError::PayLoad)?;
 
-            if code != 204 {
-                let e: PSNResponseError =
-                    serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
-                Err(PSNError::FromPSN(e.error.message))
-            } else {
-                Ok(())
-            }
+            if_parser_error(res, 204).await
         })
     }
 
@@ -1212,45 +1120,83 @@ impl PSNRequest for PSN {
         &'s self,
         boundary: &'t str,
         url: &'t str,
-        body: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 's>> {
+        body: Cow<'static, [u8]>,
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be multipart/form-data.
             async move {
                 let client = PSN::build_cli();
 
                 let req = Request::builder()
-                    .method("POST")
+                    .method(Method::POST)
                     .uri(url)
                     .header(
-                        hyper::header::CONTENT_TYPE,
+                        header::CONTENT_TYPE,
                         format!("multipart/form-data; boundary={}", boundary),
                     )
                     .header(
-                        hyper::header::AUTHORIZATION,
+                        header::AUTHORIZATION,
                         format!("Bearer {}", self.access_token.as_ref().unwrap()),
                     )
-                    .body(Body::from(body))
+                    .body(body.into())
                     .expect("failed to build request which should not happen");
 
                 let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-                let code = res.status();
-                let body = res
-                    .into_body()
-                    .try_concat()
-                    .await
-                    .map_err(|_| PSNError::PayLoad)?;
 
-                if code != 200 {
-                    let e: PSNResponseError =
-                        serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
-                    Err(PSNError::FromPSN(e.error.message))
-                } else {
-                    Ok(())
-                }
+                if_parser_error(res, 200).await
             },
         )
     }
+
+    fn read_path(path: &str) -> PSNFuture<Result<Cow<'static, [u8]>, Self::Error>> {
+        Box::pin(
+            tokio_fs::read(path)
+                .map_err(PSNError::FromStd)
+                .map_ok(Cow::Owned),
+        )
+    }
+}
+
+#[cfg(feature = "default")]
+async fn if_parser_error(
+    res: hyper::Response<Body>,
+    code: u16,
+) -> Result<(), PSNError> {
+    if res.status() != code {
+        let body = res
+            .into_body()
+            .try_concat()
+            .await
+            .map_err(|_| PSNError::PayLoad)?;
+
+        let e: PSNResponseError = serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)?;
+        Err(PSNError::FromPSN(e.error.message))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "default")]
+async fn gen_tokens_common(
+    client: &Client<HttpsConnector<HttpConnector<GaiResolver>>>,
+    body_string: String,
+) -> Result<Tokens, PSNError> {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(urls::OAUTH_TOKEN_ENTRY)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(body_string.into())
+        .expect("failed to build request which should not happen");
+
+    let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+    let body = res
+        .into_body()
+        .try_concat()
+        .await
+        .map_err(|_| PSNError::PayLoad)?;
+
+    // Extract the access_token and/or refresh_token from the response body json.
+    serde_json::from_slice(&body).map_err(|_| PSNError::PayLoad)
 }
 
 /// serde_urlencoded can be used to make a `application/x-wwww-url-encoded` `String` buffer from form
@@ -1327,6 +1273,7 @@ impl EncodeUrl for PSN {
             .as_ref()
             .map(String::as_str)
             .unwrap_or("lazy uncheck");
+
         let two_step = self
             .two_step
             .as_ref()
@@ -1353,19 +1300,19 @@ impl EncodeUrl for PSN {
     }
 
     fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7] {
+        let refresh_token = self
+            .refresh_token
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("lazy uncheck");
+
         [
             ("app_context", "inapp_ios"),
             ("client_id", CLIENT_ID),
             ("client_secret", CLIENT_SECRET),
             ("duid", DUID),
             ("scope", SCOPE),
-            (
-                "refresh_token",
-                self.refresh_token
-                    .as_ref()
-                    .map(String::as_str)
-                    .unwrap_or("lazy uncheck"),
-            ),
+            ("refresh_token", refresh_token),
             ("grant_type", "refresh_token"),
         ]
     }
@@ -1447,18 +1394,18 @@ fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
     result.extend_from_slice(
         format!("Content-Disposition: form-data; name=\"{}\"\r\n", name).as_bytes(),
     );
-    result.extend_from_slice("Content-Type: application/json; charset=utf-8\r\n\r\n".as_bytes());
+    result.extend_from_slice(b"Content-Type: application/json; charset=utf-8\r\n\r\n");
     result.extend_from_slice(format!("{}\r\n", msg).as_bytes());
     result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
 }
 
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 #[derive(Deserialize)]
 struct Npsso {
     npsso: String,
 }
 
-#[cfg(feature = "client")]
+#[cfg(feature = "default")]
 #[derive(Deserialize)]
 struct Tokens {
     access_token: Option<String>,

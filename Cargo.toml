@@ -15,20 +15,19 @@ name = "psn_api_rs"
 path = "src/lib.rs"
 
 [features]
-default = []
-client = ["hyper", "hyper-tls", "futures-preview"]
+default = [ "futures-preview", "hyper", "hyper-tls", "serde_urlencoded", "tokio-fs" ]
 
 [dependencies]
 derive_more = "0.14.1"
-hyper = { version = "0.13.0-alpha.1", optional = true}
-hyper-tls = { git = "https://github.com/hyperium/hyper-tls", optional = true}
+hyper = { version = "=0.13.0-alpha.1", optional = true}
+hyper-tls = { version = "=0.4.0-alpha.1", optional = true}
 futures-preview = { version = "0.3.0-alpha.18", features = ["nightly", "async-await"] , optional = true }
 rand = "0.7.1"
-serde = "1.0.100"
-serde_derive = "1.0.100"
+serde = "1.0.101"
+serde_derive = "1.0.101"
 serde_json = "1.0.40"
-serde_urlencoded = "0.6.1"
-tokio-fs = "0.2.0-alpha.4"
+serde_urlencoded = { version = "0.6.1", optional = true }
+tokio-fs = { version = "=0.2.0-alpha.4", optional = true }
 
 [dev-dependencies]
-tokio = "0.2.0-alpha.4"
+tokio = "=0.2.0-alpha.4"
