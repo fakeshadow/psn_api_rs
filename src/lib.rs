@@ -62,16 +62,15 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "default")]
-use derive_more::Display;
-#[cfg(feature = "default")]
-use futures::TryFutureExt;
-#[cfg(feature = "default")]
-use hyper::{
-    client::{connect::dns::GaiResolver, HttpConnector},
-    header, Body, Client, Method, Request,
+use {
+    derive_more::Display,
+    futures::TryFutureExt,
+    hyper::{
+        client::{connect::dns::GaiResolver, HttpConnector},
+        header, Body, Client, Method, Request,
+    },
+    hyper_tls::HttpsConnector
 };
-#[cfg(feature = "default")]
-use hyper_tls::HttpsConnector;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
 
@@ -736,9 +735,11 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     type Error;
 
     /// getter used in `PSNRequest::message_multipart_body` method.
-    fn online_id(&self) -> &str;
-    /// getter used in `PSNRequest::message_multipart_body` method.
-    fn self_online_id(&self) -> &str;
+    fn other_online_id(&self) -> &str;
+
+    fn self_online_id(&self) -> &str {
+        self.online_id()
+    }
 
     fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
@@ -906,7 +907,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
             if msg.is_none() && path.is_none() {
                 let msg = serde_json::to_string(&GenerateNewThread::new(
-                    self.online_id(),
+                    self.other_online_id(),
                     self.self_online_id(),
                 ))
                 .unwrap_or_else(|_| "".to_owned());
@@ -960,12 +961,8 @@ impl PSN {
 #[cfg(feature = "default")]
 impl PSNRequest for PSN {
     type Error = PSNError;
-    fn online_id(&self) -> &str {
+    fn other_online_id(&self) -> &str {
         self.online_id.as_ref().unwrap()
-    }
-
-    fn self_online_id(&self) -> &str {
-        self.self_online_id.as_str()
     }
 
     fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
@@ -1202,27 +1199,117 @@ async fn res_to_bytes(res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
 /// }
 /// ```
 pub trait EncodeUrl {
-    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4];
+    fn uuid(&self) -> &str;
+    fn two_step(&self) -> &str;
+    fn refresh_token(&self) -> &str;
+    fn region(&self) -> &str;
+    fn online_id(&self) -> &str;
+    fn language(&self) -> &str;
+    fn np_communication_id(&self) -> &str;
 
-    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6];
+    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4] {
+        [
+            ("authentication_type", "two_step"),
+            ("client_id", CLIENT_ID),
+            ("ticket_uuid", self.uuid()),
+            ("code", self.two_step()),
+        ]
+    }
 
-    fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7];
+    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6] {
+        [
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("duid", DUID),
+            ("scope", SCOPE),
+            ("code", grant_code),
+            ("grant_type", "authorization_code"),
+        ]
+    }
 
-    fn profile_encode(&self) -> String;
+    fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7] {
 
-    fn trophy_summary_encode(&self, offset: u32) -> String;
+        [
+            ("app_context", "inapp_ios"),
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("duid", DUID),
+            ("scope", SCOPE),
+            ("refresh_token", self.refresh_token()),
+            ("grant_type", "refresh_token"),
+        ]
+    }
 
-    fn trophy_set_encode(&self) -> String;
+    fn profile_encode(&self) -> String {
+        format!(
+            "https://{}{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary",
+            self.region(),
+            USERS_ENTRY,
+            self.online_id()
+        )
+    }
 
-    fn message_threads_encode(&self, offset: u32) -> String;
+    fn trophy_summary_encode(&self, offset: u32) -> String {
+        format!(
+            "https://{}{}?fields=%40default&npLanguage={}&iconSize=m&platform=PS3,PSVITA,PS4&offset={}&limit=100&comparedUser={}",
+            self.region(),
+            USER_TROPHY_ENTRY,
+            self.language(),
+            offset,
+            self.online_id()
+        )
+    }
 
-    fn message_thread_encode(&self, thread_id: &str) -> String;
+    fn trophy_set_encode(&self) -> String {
+        format!(
+            "https://{}{}{}/trophyGroups/all/trophies?fields=%40default,trophyRare,trophyEarnedRate&npLanguage={}&comparedUser={}",
+            self.region(),
+            USER_TROPHY_ENTRY,
+            self.np_communication_id(),
+            self.language(),
+            self.online_id()
+        )
+    }
 
-    fn generate_thread_encode(&self) -> String;
+    fn message_threads_encode(&self, offset: u32) -> String {
+        format!(
+            "https://{}{}?offset={}",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            offset
+        )
+    }
 
-    fn leave_message_thread_encode(&self, thread_id: &str) -> String;
+    fn message_thread_encode(&self, thread_id: &str) -> String {
+        format!(
+            "https://{}{}/{}?fields=threadMembers,threadNameDetail,threadThumbnailDetail,threadProperty,latestTakedownEventDetail,newArrivalEventDetail,threadEvents&count=100",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
+    }
 
-    fn send_message_encode(&self, thread_id: &str) -> String;
+    fn generate_thread_encode(&self) -> String {
+        format!("https://{}{}/", self.region(), MESSAGE_THREAD_ENTRY)
+    }
+
+    fn leave_message_thread_encode(&self, thread_id: &str) -> String {
+        format!(
+            "https://{}{}/{}/users/me",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
+    }
+
+    fn send_message_encode(&self, thread_id: &str) -> String {
+        format!(
+            "https://{}{}/{}/messages",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
+    }
 
     fn store_search_encode(lang: &str, region: &str, age: &str, name: &str) -> String {
         let name = name.replace(" ", "+");
@@ -1257,125 +1344,47 @@ pub trait EncodeUrl {
 }
 
 impl EncodeUrl for PSN {
-    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4] {
-        let uuid = self
-            .uuid
+    fn uuid(&self) -> &str {
+        self.uuid
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck");
+            .unwrap_or("lazy uncheck")
+    }
 
-        let two_step = self
-            .two_step
+    fn two_step(&self) -> &str {
+        self.two_step
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck");
-
-        [
-            ("authentication_type", "two_step"),
-            ("client_id", CLIENT_ID),
-            ("ticket_uuid", uuid),
-            ("code", two_step),
-        ]
+            .unwrap_or("lazy uncheck")
     }
 
-    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6] {
-        [
-            ("client_id", CLIENT_ID),
-            ("client_secret", CLIENT_SECRET),
-            ("duid", DUID),
-            ("scope", SCOPE),
-            ("code", grant_code),
-            ("grant_type", "authorization_code"),
-        ]
-    }
-
-    fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7] {
-        let refresh_token = self
-            .refresh_token
+    fn refresh_token(&self) -> &str {
+        self.refresh_token
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck");
-
-        [
-            ("app_context", "inapp_ios"),
-            ("client_id", CLIENT_ID),
-            ("client_secret", CLIENT_SECRET),
-            ("duid", DUID),
-            ("scope", SCOPE),
-            ("refresh_token", refresh_token),
-            ("grant_type", "refresh_token"),
-        ]
+            .unwrap_or("lazy uncheck")
     }
 
-    fn profile_encode(&self) -> String {
-        format!(
-            "https://{}{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary",
-            self.region.as_str(),
-            USERS_ENTRY,
-            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
-        )
+    fn region(&self) -> &str {
+        self.region.as_str()
     }
 
-    fn trophy_summary_encode(&self, offset: u32) -> String {
-        format!(
-            "https://{}{}?fields=%40default&npLanguage={}&iconSize=m&platform=PS3,PSVITA,PS4&offset={}&limit=100&comparedUser={}",
-            self.region.as_str(),
-            USER_TROPHY_ENTRY,
-            self.language.as_str(),
-            offset,
-            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
-        )
+    fn online_id(&self) -> &str {
+        self.online_id
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("lazy uncheck")
     }
 
-    fn trophy_set_encode(&self) -> String {
-        format!(
-            "https://{}{}{}/trophyGroups/all/trophies?fields=%40default,trophyRare,trophyEarnedRate&npLanguage={}&comparedUser={}",
-            self.region.as_str(),
-            USER_TROPHY_ENTRY,
-            self.np_communication_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck"),
-            self.language.as_str(),
-            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
-        )
+    fn language(&self) -> &str {
+        self.language.as_str()
     }
 
-    fn message_threads_encode(&self, offset: u32) -> String {
-        format!(
-            "https://{}{}?offset={}",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            offset
-        )
-    }
-
-    fn message_thread_encode(&self, thread_id: &str) -> String {
-        format!(
-            "https://{}{}/{}?fields=threadMembers,threadNameDetail,threadThumbnailDetail,threadProperty,latestTakedownEventDetail,newArrivalEventDetail,threadEvents&count=100",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            thread_id
-        )
-    }
-
-    fn generate_thread_encode(&self) -> String {
-        format!("https://{}{}/", self.region.as_str(), MESSAGE_THREAD_ENTRY)
-    }
-
-    fn leave_message_thread_encode(&self, thread_id: &str) -> String {
-        format!(
-            "https://{}{}/{}/users/me",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            thread_id
-        )
-    }
-
-    fn send_message_encode(&self, thread_id: &str) -> String {
-        format!(
-            "https://{}{}/{}/messages",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            thread_id
-        )
+    fn np_communication_id(&self) -> &str {
+        self.np_communication_id
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("lazy uncheck")
     }
 }
 

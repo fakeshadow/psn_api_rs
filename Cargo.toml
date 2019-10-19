@@ -19,8 +19,8 @@ default = [ "futures-preview", "hyper", "hyper-tls", "serde_urlencoded", "tokio-
 
 [dependencies]
 derive_more = "0.14.1"
-hyper = { version = "=0.13.0-alpha.4", optional = true}
-hyper-tls = { version = "=0.4.0-alpha.4", optional = true}
+hyper = { version = "=0.13.0-alpha.4", optional = true, default-features = false }
+hyper-tls = { version = "=0.4.0-alpha.4", optional = true }
 futures-preview = { version = "=0.3.0-alpha.19", features = [ "async-await" ], optional = true }
 rand = "0.7.1"
 serde = "1.0.101"
