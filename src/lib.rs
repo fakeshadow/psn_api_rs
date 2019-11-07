@@ -1,31 +1,27 @@
 //! # A simple PSN API wrapper.
-//! It uses an async http client(actix-web-client in this case) to communicate wih the official PSN API.
+//! It uses an async http client(hyper::Client in this case) to communicate wih the official PSN API.
 //!
 //! Some basics:
-//! The crate use a pair of `uuid` and `two_step` code to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
+//! The crate use a pair of `uuid` and `two_step` tokens to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
+//! [How to obtain uuid and two_step tokens](https://tusticles.com/psn-php/first_login.html)
 //! The `access_token` last about an hour before expire and it's needed to call most other PSN APIs(The PSN store API doesn't need any token to access though).
 //! The `refresh_token` last much longer and it's used to generate a new access_token after/before it is expired.
 //! * Some thing to note:
 //! There is a rate limiter for the official PSN API so better not make lots of calls in short time.
-//! Therefore its' best to avoid using in multi threads also as a single thread could hit the limit easily on any given machine running this crate.
+//! Therefore its' best to avoid using in multi threads as a single thread could hit the limit easily on any given machine running this crate.
 //!
 //! # Example:
-//!``` rust
-//!use futures::lazy;
-//!
-//!use tokio::runtime::current_thread::Runtime;
+//!```no_run
 //!use psn_api_rs::{PSNRequest, PSN, models::PSNUser};
 //!
-//!fn main() {
+//!#[tokio::main]
+//!async fn main() -> std::io::Result<()> {
 //!    let refresh_token = String::from("your refresh token");
 //!    let uuid = String::from("your uuid");
 //!    let two_step = String::from("your two_step code");
 //!
-//!    let mut runtime = Runtime::new().unwrap();
-//!
 //!    // construct a PSN struct,add credentials and call auth to generate tokens.
-//!    let mut psn: PSN = runtime.block_on(lazy(|| {
-//!       PSN::new()
+//!    let mut psn: PSN = PSN::new()
 //!            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
 //!            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
 //!            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
@@ -34,22 +30,26 @@
 //!            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
 //!            .add_two_step(two_step)
 //!            .auth()
-//!    })).unwrap_or_else(|e| panic!("{:?}", e));
+//!            .await
+//!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
 //!    println!(
 //!        "Authentication Success! These are your token info from PSN network: \r\n{:#?} ",
 //!        psn
 //!    );
 //!
-//!    let user: PSNUser = runtime.block_on(
-//!        psn.add_online_id("Hakoom".to_owned()).get_profile()  // <- use the psn struct to call for user_profile.
-//!    ).unwrap_or_else(|e| panic!("{:?}", e));
+//!    let user: PSNUser = psn
+//!            .add_online_id("Hakoom".to_owned())
+//!            .get_profile()
+//!            .await
+//!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
 //!    println!(
 //!        "Example finished. Got user info : \r\n{:#?}",
 //!        user
 //!    );
 //!
+//!    Ok(())
 //!    // psn struct is dropped at this point so it's better to store your access_token and refresh_token here to make them reusable.
 //!}
 //!```
@@ -57,22 +57,30 @@
 #[macro_use]
 extern crate serde_derive;
 
+use std::borrow::Cow;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use derive_more::Display;
-use futures::{
-    future::{ok, Either},
-    Future,
-};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::de::DeserializeOwned;
+
+#[cfg(feature = "default")]
+use {
+    derive_more::Display,
+    hyper::{
+        client::{connect::dns::GaiResolver, HttpConnector},
+        header, Body, Client, Method, Request,
+    },
+    hyper_tls::HttpsConnector,
+};
 
 use crate::models::MessageDetail;
 
 /// `urls` are hard coded for PSN authentication which are used if you want to impl your own http client.
 pub mod urls {
     /// grant code entry is generate with this pattern
-    /// ```rust
+    /// ```ignore
     /// format!("https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?duid={}&app_context=inapp_ios&client_id={}&scope={}&response_type=code", DUID, CLIENT_ID, SCOPE);
     /// ```
     pub const GRANT_CODE_ENTRY: &str =
@@ -88,7 +96,6 @@ const USERS_ENTRY: &str = "-prof.np.community.playstation.net/userProfile/v1/use
 const USER_TROPHY_ENTRY: &str = "-tpy.np.community.playstation.net/trophy/v1/trophyTitles/";
 const MESSAGE_THREAD_ENTRY: &str = "-gmsg.np.community.playstation.net/groupMessaging/v1/threads";
 const STORE_ENTRY: &str = "https://store.playstation.com/valkyrie-api/";
-
 //const ACTIVITY_ENTRY: &'static str = "https://activity.api.np.km.playstation.net/activity/api/";
 
 const CLIENT_ID: &str = "b7cbf451-6bb6-4a5a-8913-71e61f462787";
@@ -600,14 +607,14 @@ pub struct PSN {
     two_step: Option<String>,
     refresh_token: Option<String>,
     last_refresh_at: Option<Instant>,
-    online_id: Option<String>,
+    other_online_id: Option<String>,
     np_id: Option<String>,
     np_communication_id: Option<String>,
     language: String,
 }
 
 /// You can override `PSNRequest` trait to impl your own error type.
-#[cfg(feature = "awc")]
+#[cfg(feature = "default")]
 #[derive(Debug, Display)]
 pub enum PSNError {
     #[display(fmt = "No Access Token is found. Please login in first")]
@@ -624,6 +631,8 @@ pub enum PSNError {
     Tokens,
     #[display(fmt = "Error from PSN response: {}", _0)]
     FromPSN(String),
+    #[display(fmt = "Error from Local: {}", _0)]
+    FromStd(std::io::Error),
 }
 
 impl Default for PSN {
@@ -636,7 +645,7 @@ impl Default for PSN {
             two_step: None,
             refresh_token: None,
             last_refresh_at: None,
-            online_id: None,
+            other_online_id: None,
             np_id: None,
             np_communication_id: None,
             language: "en".to_owned(),
@@ -689,7 +698,7 @@ impl PSN {
 
     /// `online_id` is the displayed online_id of PSN user which used to query user's info.
     pub fn add_online_id(&mut self, online_id: String) -> &mut Self {
-        self.online_id = Some(online_id);
+        self.other_online_id = Some(online_id);
         self
     }
 
@@ -705,6 +714,21 @@ impl PSN {
         self
     }
 
+    pub fn set_access_token(&mut self, access_token: Option<String>) -> &mut Self {
+        self.access_token = access_token;
+        self
+    }
+
+    pub fn set_refresh_token(&mut self, refresh_token: Option<String>) -> &mut Self {
+        self.refresh_token = refresh_token;
+        self
+    }
+
+    /// set refresh time to now.
+    pub fn set_refresh(&mut self) {
+        self.last_refresh_at = Some(Instant::now());
+    }
+
     /// check if it's about time the access_token expires.
     pub fn should_refresh(&self) -> bool {
         if let Some(i) = self.last_refresh_at {
@@ -717,340 +741,470 @@ impl PSN {
     }
 }
 
+/// type alias to stop clippy from complaining
+pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
+
 /// You can override `PSNRequest` trait to impl your preferred http client
-///
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
-pub trait PSNRequest
-where
-    Self: Sized + EncodeUrl + MultiPart + 'static,
-{
+/// methods with multiple lifetimes always use args with shorter lifetime than self and the returned future.
+pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     type Error;
 
-    fn auth(self) -> Box<dyn Future<Item = PSN, Error = Self::Error>> {
-        Box::new(
-            self.gen_access_from_refresh()
-                .or_else(|(_, p)| p.gen_access_and_refresh())
-                .map_err(|(e, _)| e),
-        )
+    fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
+        Box::pin(async move {
+            if self.gen_access_and_refresh().await.is_err() {
+                self.gen_access_from_refresh().await?;
+            }
+            Ok(self)
+        })
     }
 
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
+    fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (Self::Error, Self)>>;
+    fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
-    fn get_by_url_encode<T: DeserializeOwned + 'static>(
-        &self,
-        url: &str,
-    ) -> Box<dyn Future<Item = T, Error = Self::Error>>;
+    fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
+        &'s self,
+        url: &'u str,
+    ) -> PSNFuture<'s, Result<T, Self::Error>>;
 
     /// A generic http del handle function. return status 204 as successful response.
-    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item = (), Error = Self::Error>>;
+    fn del_by_url_encode<'s, 'u: 's>(
+        &'s self,
+        url: &'u str,
+    ) -> PSNFuture<'s, Result<(), Self::Error>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
-    fn post_by_multipart(
-        &self,
-        boundary: &str,
-        url: &str,
-        body: Vec<u8>,
-    ) -> Box<dyn Future<Item = (), Error = Self::Error>>;
+    /// return `Cow<'static, [u8]>` because Http Request builder only impl `From` trait for [u8] with `'static` lifetime.
+    fn post_by_multipart<'s, 't: 's>(
+        &'s self,
+        boundary: &'t str,
+        url: &'t str,
+        body: Cow<'static, [u8]>,
+    ) -> PSNFuture<'s, Result<(), Self::Error>>;
 
     /// need to `add_online_id` before call this method.
-    /// ```rust
-    /// PSN::new().add_online_id(String::from("123")).get_rofile()
+    /// ```ignore
+    /// crate::PSN::new().add_online_id(String::from("123")).get_rofile()
     /// ```
-    fn get_profile<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        self.get_by_url_encode(self.profile_encode().as_str())
+    fn get_profile<T: DeserializeOwned + 'static>(&self) -> PSNFuture<Result<T, Self::Error>> {
+        Box::pin(async move {
+            let url = self.profile_encode();
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// need to `add_online_id` and give a legit `offset`(offset can't be larger than the total trophy lists a user have).
-    /// ```rust
-    /// PSN::new().add_online_id(String::from("123")).get_titles(0)
+    /// ```ignore
+    /// crate::PSN::new().add_online_id(String::from("123")).get_titles(0)
     /// ```
-    fn get_titles<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        self.get_by_url_encode(self.trophy_summary_encode(offset).as_str())
+    fn get_titles<T: DeserializeOwned + 'static>(
+        &self,
+        offset: u32,
+    ) -> PSNFuture<Result<T, Self::Error>> {
+        Box::pin(async move {
+            let url = self.trophy_summary_encode(offset);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// need to `add_online_id` and `add_np_communication_id` before call this method.
-    /// ```rust
-    /// PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
+    /// ```ignore
+    /// crate::PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
     /// ```
-    fn get_trophy_set<T>(&self) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        self.get_by_url_encode(self.trophy_set_encode().as_str())
+    fn get_trophy_set<T: DeserializeOwned + 'static>(&self) -> PSNFuture<Result<T, Self::Error>> {
+        Box::pin(async move {
+            let url = self.trophy_set_encode();
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// return message threads of the account you used to login PSN network.
     /// `offset` can't be large than all existing threads count.
-    fn get_message_threads<T>(&self, offset: u32) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        self.get_by_url_encode(self.message_threads_encode(offset).as_str())
+    fn get_message_threads<T: DeserializeOwned + 'static>(
+        &self,
+        offset: u32,
+    ) -> PSNFuture<Result<T, Self::Error>> {
+        Box::pin(async move {
+            let url = self.message_threads_encode(offset);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// return message thread detail of the `ThreadId`.
-    fn get_message_thread<T>(
-        &self,
-        thread_id: &str,
-    ) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        self.get_by_url_encode(self.message_thread_encode(thread_id).as_str())
+    fn get_message_thread<'s, 't: 's, T: DeserializeOwned + 'static>(
+        &'s self,
+        thread_id: &'t str,
+    ) -> PSNFuture<'s, Result<T, Self::Error>> {
+        Box::pin(async move {
+            let url = self.message_thread_encode(thread_id);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
 
     /// need to `add_online_id` and `set_self_online_id` before call this method.
     /// Note that `set_self_online_id` take mut self while `add_online_id` take a &mut self. So `set_self_online_id` should be use as the first arg here.
-    /// ```rust
-    /// PSN::new().set_self_online_id(String::from("NPWR00233")).add_online_id(String::from("123")).generate_message_thread()
+    /// ```ignore
+    /// crate::PSN::new().set_self_online_id(String::from("NPWR00233")).add_online_id(String::from("123")).generate_message_thread()
     /// ```
-    fn generate_message_thread(&self) -> Box<dyn Future<Item = (), Error = Self::Error>> {
-        let boundary = Self::generate_boundary();
-        let body = self.message_multipart_body(boundary.as_str(), None, None);
+    fn generate_message_thread(&self) -> PSNFuture<Result<(), Self::Error>> {
+        Box::pin(async move {
+            let boundary = Self::generate_boundary();
+            let body = self.multipart_body(boundary.as_str(), None, None).await?;
+            let url = self.generate_thread_encode();
 
-        self.post_by_multipart(
-            boundary.as_str(),
-            self.generate_thread_encode().as_str(),
-            body,
-        )
+            self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+                .await
+        })
     }
 
-    fn leave_message_thread(
-        &self,
-        thread_id: &str,
-    ) -> Box<dyn Future<Item = (), Error = Self::Error>> {
-        self.del_by_url_encode(self.leave_message_thread_encode(thread_id).as_str())
+    fn leave_message_thread<'s, 't: 's>(
+        &'s self,
+        thread_id: &'t str,
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
+        Box::pin(async move {
+            let url = self.leave_message_thread_encode(thread_id);
+            self.del_by_url_encode(url.as_str()).await
+        })
     }
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message(
-        &self,
-        msg: Option<&str>,
-        path: Option<&str>,
-        thread_id: &str,
-    ) -> Box<dyn Future<Item = (), Error = Self::Error>> {
-        let boundary = Self::generate_boundary();
-        let url = self.send_message_encode(thread_id);
-        let body = self.message_multipart_body(boundary.as_str(), msg, path);
+    fn send_message<'s, 't: 's>(
+        &'s self,
+        msg: Option<&'t str>,
+        path: Option<&'t str>,
+        thread_id: &'t str,
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
+        Box::pin(async move {
+            let boundary = Self::generate_boundary();
+            let url = self.send_message_encode(thread_id);
+            let body = self.multipart_body(&boundary, msg, path).await?;
 
-        self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+            self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+                .await
+        })
     }
 
-    fn search_store_items<T>(
-        &self,
-        lang: &str,
-        region: &str,
-        age: &str,
-        name: &str,
-    ) -> Box<dyn Future<Item = T, Error = Self::Error>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        self.get_by_url_encode(Self::store_search_encode(lang, region, age, name).as_str())
+    fn search_store_items<'s, 't: 's, T: DeserializeOwned + 'static>(
+        &'s self,
+        lang: &'t str,
+        region: &'t str,
+        age: &'t str,
+        name: &'t str,
+    ) -> PSNFuture<'s, Result<T, Self::Error>> {
+        Box::pin(async move {
+            let url = Self::store_search_encode(lang, region, age, name);
+            self.get_by_url_encode(url.as_str()).await
+        })
     }
+
+    /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
+    /// pass both as `None` will result in generating a new message thread body.
+    fn multipart_body<'s, 'a: 's>(
+        &'s self,
+        boundary: &'a str,
+        msg: Option<&'a str>,
+        path: Option<&'a str>,
+    ) -> PSNFuture<'s, Result<Cow<'static, [u8]>, Self::Error>> {
+        Box::pin(async move {
+            let mut result: Vec<u8> = Vec::new();
+
+            if msg.is_none() && path.is_none() {
+                let msg = serde_json::to_string(&GenerateNewThread::new(
+                    self.other_online_id(),
+                    self.self_online_id(),
+                ))
+                .unwrap_or_else(|_| "".to_owned());
+
+                write_string(&mut result, boundary, "threadDetail", msg.as_str());
+                return Ok(Cow::Owned(result));
+            };
+
+            let event_category = if path.is_some() { 3u8 } else { 1 };
+            let msg = serde_json::to_string(&SendMessage::new(msg, event_category))
+                .unwrap_or_else(|_| "".to_owned());
+
+            write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
+
+            if let Some(path) = path {
+                let file_data = Self::read_path(path).await?;
+
+                result.extend_from_slice(b"Content-Disposition: form-data; name=\"imageData\"\r\n");
+                result.extend_from_slice(b"Content-Type: image/png\r\n");
+
+                //                result.extend_from_slice(
+                //                    "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
+                //                );
+                //                result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
+
+                result.extend_from_slice(
+                    format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
+                );
+                // ToDo: in case extend failed
+                result.extend_from_slice(&file_data);
+                result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
+            }
+
+            Ok(Cow::Owned(result))
+        })
+    }
+
+    /// read local file from path and return `Cow<'static, [u8]>` from a future.
+    fn read_path(path: &str) -> PSNFuture<Result<Cow<'static, [u8]>, Self::Error>>;
 }
 
-#[cfg(feature = "awc")]
+#[cfg(feature = "default")]
 impl PSN {
-    /// default http client
-    fn http_client() -> awc::Client {
-        awc::Client::build()
-            .connector(
-                awc::Connector::new()
-                    .timeout(Duration::from_secs(10))
-                    .finish(),
-            )
-            .timeout(Duration::from_secs(10))
-            .finish()
+    /// default http client `hyper::Client` with `hyper-tls` as https connector
+    fn build_cli() -> Client<HttpsConnector<HttpConnector<GaiResolver>>> {
+        let https = HttpsConnector::new().unwrap();
+        Client::builder().build::<_, Body>(https)
     }
 }
 
-#[cfg(feature = "awc")]
+#[cfg(feature = "default")]
 impl PSNRequest for PSN {
     type Error = PSNError;
-    fn gen_access_and_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
-        Box::new(
-            // User uuid and two_step code to make a post call.
-            PSN::http_client()
-                .post(urls::NP_SSO_ENTRY)
-                .send_form(&self.np_sso_url_encode())
-                .then(|r| match r {
-                    Ok(r) => Ok((r, self)),
-                    Err(_) => Err((PSNError::NetWork, self)),
-                })
-                .and_then(|(mut res, psn)| {
-                    // At this point the uuid and two_step code are consumed and can't be used anymore.
-                    // If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
 
-                    // Extract the npsso cookie as string from the response json body.
-                    res.json().then(|r: Result<Npsso, _>| match r {
-                        Ok(n) => Ok((n, psn)),
-                        Err(_) => Err((PSNError::NoNPSSO, psn)),
-                    })
-                })
-                .and_then(|(t, psn)| {
-                    // Use the npsso we get as a cookie header in a get call.
-                    PSN::http_client()
-                        .get(urls::GRANT_CODE_ENTRY)
-                        .header("Cookie", format!("npsso={}", t.npsso))
-                        .header(
-                            awc::http::header::CONTENT_TYPE,
-                            "application/x-www-form-urlencoded",
-                        )
-                        .send()
-                        .then(|r| match r {
-                            Ok(r) => Ok((r, psn)),
-                            Err(_) => Err((PSNError::NetWork, psn)),
-                        })
-                })
-                .and_then(|(res, psn)| {
-                    // Extract the "x-np-grant-code" from the response header and parse it to string.
-                    match res.headers().get("x-np-grant-code") {
-                        Some(h) => Ok((h.to_str().unwrap().to_owned(), psn)),
-                        None => Err((PSNError::NoGrantCode, psn)),
-                    }
-                })
-                .and_then(|(grant, psn)| {
-                    // Use the grant code to make another post call to finish the authentication process.
-                    PSN::http_client()
-                        .post(urls::OAUTH_TOKEN_ENTRY)
-                        .send_form(&PSN::oauth_token_encode(grant))
-                        .then(|r| match r {
-                            Ok(r) => Ok((r, psn)),
-                            Err(_) => Err((PSNError::NetWork, psn)),
-                        })
-                })
-                .and_then(|(mut res, mut psn)| {
-                    // Extract the access_token and refresh_token from the response body json.
-                    res.json().then(|r: Result<Tokens, _>| match r {
-                        Ok(t) => {
-                            psn.last_refresh_at = Some(Instant::now());
-                            psn.access_token = t.access_token;
-                            psn.refresh_token = t.refresh_token;
-                            Ok(psn)
-                        }
-                        Err(_) => Err((PSNError::Tokens, psn)),
-                    })
-                }),
-        )
+    fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
+        Box::pin(async move {
+            let client = PSN::build_cli();
+
+            let body_string = serde_urlencoded::to_string(&self.np_sso_url_encode())
+                .expect("This should not fail");
+
+            let req = general_request_builder(urls::NP_SSO_ENTRY, body_string);
+
+            // User uuid and two_step code to make a post request.
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+
+            let bytes = res_to_bytes(res).await?;
+
+            /*
+                At this point the uuid and two_step code are consumed and can't be used anymore.
+                If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
+            */
+
+            // Extract the np_sso cookie as string from the response json body.
+            let npsso: Npsso = serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)?;
+
+            // Use the np_sso we get as a cookie header.
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(urls::GRANT_CODE_ENTRY)
+                .header("Cookie", format!("npsso={}", npsso.npsso))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::empty())
+                .expect("failed to build request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+
+            // Extract the "x-np-grant-code" from the response header and parse it to &str.
+            let grant = match res.headers().get("x-np-grant-code") {
+                Some(h) => h.to_str().unwrap(),
+                None => return Err(PSNError::NoGrantCode),
+            };
+
+            // Use the grant code to make another post request to finish the authentication process.
+            let body = serde_urlencoded::to_string(&PSN::oauth_token_encode(grant))
+                .expect("This should not fail");
+
+            let tokens = gen_tokens_common(&client, body).await?;
+
+            self.set_access_token(tokens.access_token)
+                .set_refresh_token(tokens.refresh_token)
+                .set_refresh();
+
+            Ok(())
+        })
     }
 
-    fn gen_access_from_refresh(self) -> Box<dyn Future<Item = PSN, Error = (PSNError, PSN)>> {
-        Box::new(
+    fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
+        Box::pin(async move {
             // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
             // We only need the new access token from response.(refresh token can't be refreshed.)
-            PSN::http_client()
-                .post(urls::OAUTH_TOKEN_ENTRY)
-                .send_form(&self.oauth_token_refresh_encode())
-                .then(|r| match r {
-                    Ok(r) => Ok((r, self)),
-                    Err(_) => Err((PSNError::NetWork, self)),
-                })
-                .and_then(|(mut res, mut psn)| {
-                    res.json().then(|r: Result<Tokens, _>| match r {
-                        Ok(t) => {
-                            psn.last_refresh_at = Some(Instant::now());
-                            psn.access_token = t.access_token;
-                            Ok(psn)
-                        }
-                        Err(_) => Err((PSNError::Tokens, psn)),
-                    })
-                }),
-        )
+            let client = PSN::build_cli();
+
+            let body = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
+                .expect("This should not fail");
+
+            let tokens = gen_tokens_common(&client, body).await?;
+
+            self.set_access_token(tokens.access_token)
+                .set_refresh();
+
+            Ok(())
+        })
     }
 
-    fn get_by_url_encode<T>(&self, url: &str) -> Box<dyn Future<Item = T, Error = PSNError>>
-    where
-        T: DeserializeOwned + 'static,
-    {
-        Box::new(
+    fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
+        &'s self,
+        url: &'u str,
+    ) -> PSNFuture<'s, Result<T, Self::Error>> {
+        Box::pin(
             // The access_token is used as bearer token and content type header need to be application/json.
-            PSN::http_client()
-                .get(url)
-                .header(awc::http::header::CONTENT_TYPE, "application/json")
-                .bearer_auth(
-                    self.access_token
-                        .as_ref()
-                        .map(String::as_str)
-                        .unwrap_or("incase"),
-                )
-                .send()
-                .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    if res.status() != 200 {
-                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
-                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
-                        ));
-                    }
-                    Either::B(res.json().limit(6_553_500).map_err(|_| PSNError::PayLoad))
-                }),
+            async move {
+                let client = PSN::build_cli();
+
+                let mut req = Request::builder();
+
+                req.method(Method::GET)
+                    .uri(url)
+                    .header(header::CONTENT_TYPE, "application/json");
+
+                // there are api endpoints that don't need access_token to access so we only add bearer token when we have it.
+                if let Some(token) = self.access_token() {
+                    req.header(header::AUTHORIZATION, format!("Bearer {}", token));
+                }
+
+                let req = req
+                    .body(Body::empty())
+                    .expect("failed to build request which should not happen");
+
+                let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+                let code = res.status();
+
+                let bytes = res_to_bytes(res).await?;
+
+                if code != 200 {
+                    let e: PSNResponseError =
+                        serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)?;
+                    Err(PSNError::FromPSN(e.error.message))
+                } else {
+                    serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)
+                }
+            },
         )
     }
 
-    fn del_by_url_encode(&self, url: &str) -> Box<dyn Future<Item = (), Error = PSNError>> {
-        Box::new(
-            PSN::http_client()
-                .delete(url)
-                .bearer_auth(self.access_token.as_ref().unwrap())
-                .send()
-                .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    if res.status() != 204 {
-                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
-                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
-                        ));
-                    }
-                    Either::B(ok(()))
-                }),
-        )
-    }
+    fn del_by_url_encode<'s, 'u: 's>(
+        &'s self,
+        url: &'u str,
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
+        Box::pin(async move {
+            let client = PSN::build_cli();
 
-    fn post_by_multipart(
-        &self,
-        boundary: &str,
-        url: &str,
-        body: Vec<u8>,
-    ) -> Box<dyn Future<Item = (), Error = PSNError>> {
-        Box::new(
-            // The access_token is used as bearer token and content type header need to be multipart/form-data.
-            PSN::http_client()
-                .post(url)
+            let req = Request::builder()
+                .method(Method::DELETE)
+                .uri(url)
                 .header(
-                    awc::http::header::CONTENT_TYPE,
-                    format!("multipart/form-data; boundary={}", boundary),
+                    header::AUTHORIZATION,
+                    format!(
+                        "Bearer {}",
+                        self.access_token().expect("access_token is None")
+                    ),
                 )
-                .bearer_auth(self.access_token.as_ref().unwrap())
-                .send_body(body)
-                .map_err(|_| PSNError::NetWork)
-                .and_then(|mut res| {
-                    if res.status() != 200 {
-                        return Either::A(res.json().map_err(|_| PSNError::PayLoad).and_then(
-                            |e: PSNResponseError| Err(PSNError::FromPSN(e.error.message)),
-                        ));
-                    }
-                    Either::B(ok(()))
-                }),
+                .body(Body::empty())
+                .expect("failed to build request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+
+            if_parser_error(res, 204).await
+        })
+    }
+
+    fn post_by_multipart<'s, 't: 's>(
+        &'s self,
+        boundary: &'t str,
+        url: &'t str,
+        body: Cow<'static, [u8]>,
+    ) -> PSNFuture<'s, Result<(), Self::Error>> {
+        Box::pin(
+            // The access_token is used as bearer token and content type header need to be multipart/form-data.
+            async move {
+                let client = PSN::build_cli();
+
+                let req = Request::builder()
+                    .method(Method::POST)
+                    .uri(url)
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={}", boundary),
+                    )
+                    .header(
+                        header::AUTHORIZATION,
+                        format!(
+                            "Bearer {}",
+                            self.access_token().expect("access_token is None")
+                        ),
+                    )
+                    .body(body.into())
+                    .expect("failed to build request which should not happen");
+
+                let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+
+                if_parser_error(res, 200).await
+            },
         )
     }
+
+    fn read_path(path: &str) -> PSNFuture<Result<Cow<'static, [u8]>, Self::Error>> {
+        Box::pin(async move {
+            tokio_fs::read(path)
+                .await
+                .map(Cow::Owned)
+                .map_err(PSNError::FromStd)
+        })
+    }
+}
+
+#[cfg(feature = "default")]
+async fn if_parser_error(res: hyper::Response<Body>, code: u16) -> Result<(), PSNError> {
+    if res.status() != code {
+        let bytes = res_to_bytes(res).await?;
+        let e: PSNResponseError = serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)?;
+        Err(PSNError::FromPSN(e.error.message))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "default")]
+async fn gen_tokens_common(
+    client: &Client<HttpsConnector<HttpConnector<GaiResolver>>>,
+    body_string: String,
+) -> Result<Tokens, PSNError> {
+    let req = general_request_builder(urls::OAUTH_TOKEN_ENTRY, body_string);
+
+    let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+
+    let bytes = res_to_bytes(res).await?;
+
+    // Extract the access_token and/or refresh_token from the response body json.
+    serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)
+}
+
+#[cfg(feature = "default")]
+fn general_request_builder(url: &str, body: impl Into<Body>) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(url)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(body.into())
+        .expect("failed to build request which should not happen")
+}
+
+#[cfg(feature = "default")]
+async fn res_to_bytes(res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
+    let mut body = res.into_body();
+    let mut bytes = Vec::new();
+    while let Some(next) = body.next().await {
+        let chunk = next.map_err(|_| PSNError::PayLoad)?;
+        bytes.extend(chunk);
+    }
+    Ok(bytes)
 }
 
 /// serde_urlencoded can be used to make a `application/x-wwww-url-encoded` `String` buffer from form
 /// it applies to `EncodeUrl` methods return a slice type.
-/// example if your http client don't support auto urlencode convert.
-/// ```rust
+/// examples if your http client don't support auto urlencode convert.
+/// ```ignore
 /// use psn_api_rs::{PSN, EncodeUrl};
 /// use serde_urlencoded;
 /// impl PSN {
@@ -1060,27 +1214,118 @@ impl PSNRequest for PSN {
 /// }
 /// ```
 pub trait EncodeUrl {
-    fn np_sso_url_encode(&self) -> [(&'static str, String); 4];
+    fn uuid(&self) -> &str;
+    fn two_step(&self) -> &str;
+    fn access_token(&self) -> Option<&str>;
+    fn refresh_token(&self) -> &str;
+    fn region(&self) -> &str;
+    fn other_online_id(&self) -> &str;
+    fn self_online_id(&self) -> &str;
+    fn language(&self) -> &str;
+    fn np_communication_id(&self) -> &str;
 
-    fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6];
+    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4] {
+        [
+            ("authentication_type", "two_step"),
+            ("client_id", CLIENT_ID),
+            ("ticket_uuid", self.uuid()),
+            ("code", self.two_step()),
+        ]
+    }
 
-    fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7];
+    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6] {
+        [
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("duid", DUID),
+            ("scope", SCOPE),
+            ("code", grant_code),
+            ("grant_type", "authorization_code"),
+        ]
+    }
 
-    fn profile_encode(&self) -> String;
+    fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7] {
+        [
+            ("app_context", "inapp_ios"),
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
+            ("duid", DUID),
+            ("scope", SCOPE),
+            ("refresh_token", self.refresh_token()),
+            ("grant_type", "refresh_token"),
+        ]
+    }
 
-    fn trophy_summary_encode(&self, offset: u32) -> String;
+    fn profile_encode(&self) -> String {
+        format!(
+            "https://{}{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary",
+            self.region(),
+            USERS_ENTRY,
+            self.other_online_id()
+        )
+    }
 
-    fn trophy_set_encode(&self) -> String;
+    fn trophy_summary_encode(&self, offset: u32) -> String {
+        format!(
+            "https://{}{}?fields=%40default&npLanguage={}&iconSize=m&platform=PS3,PSVITA,PS4&offset={}&limit=100&comparedUser={}",
+            self.region(),
+            USER_TROPHY_ENTRY,
+            self.language(),
+            offset,
+            self.other_online_id()
+        )
+    }
 
-    fn message_threads_encode(&self, offset: u32) -> String;
+    fn trophy_set_encode(&self) -> String {
+        format!(
+            "https://{}{}{}/trophyGroups/all/trophies?fields=%40default,trophyRare,trophyEarnedRate&npLanguage={}&comparedUser={}",
+            self.region(),
+            USER_TROPHY_ENTRY,
+            self.np_communication_id(),
+            self.language(),
+            self.other_online_id()
+        )
+    }
 
-    fn message_thread_encode(&self, thread_id: &str) -> String;
+    fn message_threads_encode(&self, offset: u32) -> String {
+        format!(
+            "https://{}{}?offset={}",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            offset
+        )
+    }
 
-    fn generate_thread_encode(&self) -> String;
+    fn message_thread_encode(&self, thread_id: &str) -> String {
+        format!(
+            "https://{}{}/{}?fields=threadMembers,threadNameDetail,threadThumbnailDetail,threadProperty,latestTakedownEventDetail,newArrivalEventDetail,threadEvents&count=100",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
+    }
 
-    fn leave_message_thread_encode(&self, thread_id: &str) -> String;
+    fn generate_thread_encode(&self) -> String {
+        format!("https://{}{}/", self.region(), MESSAGE_THREAD_ENTRY)
+    }
 
-    fn send_message_encode(&self, thread_id: &str) -> String;
+    fn leave_message_thread_encode(&self, thread_id: &str) -> String {
+        format!(
+            "https://{}{}/{}/users/me",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
+    }
+
+    fn send_message_encode(&self, thread_id: &str) -> String {
+        format!(
+            "https://{}{}/{}/messages",
+            self.region(),
+            MESSAGE_THREAD_ENTRY,
+            thread_id
+        )
+    }
 
     fn store_search_encode(lang: &str, region: &str, age: &str, name: &str) -> String {
         let name = name.replace(" ", "+");
@@ -1097,141 +1342,8 @@ pub trait EncodeUrl {
             STORE_ENTRY, lang, region, age, game_id
         )
     }
-}
 
-impl EncodeUrl for PSN {
-    fn np_sso_url_encode(&self) -> [(&'static str, String); 4] {
-        let uuid = self
-            .uuid
-            .as_ref()
-            .map(Clone::clone)
-            .expect("uuid is not a proper string");
-        let two_step = self
-            .two_step
-            .as_ref()
-            .map(Clone::clone)
-            .expect("two_step code is not a proper string");
-
-        [
-            ("authentication_type", "two_step".to_owned()),
-            ("client_id", CLIENT_ID.to_owned()),
-            ("ticket_uuid", uuid),
-            ("code", two_step),
-        ]
-    }
-
-    fn oauth_token_encode(grant_code: String) -> [(&'static str, String); 6] {
-        [
-            ("client_id", CLIENT_ID.to_owned()),
-            ("client_secret", CLIENT_SECRET.to_owned()),
-            ("duid", DUID.to_owned()),
-            ("scope", SCOPE.to_owned()),
-            ("code", grant_code),
-            ("grant_type", "authorization_code".to_owned()),
-        ]
-    }
-
-    fn oauth_token_refresh_encode(&self) -> [(&'static str, String); 7] {
-        [
-            ("app_context", "inapp_ios".to_owned()),
-            ("client_id", CLIENT_ID.to_owned()),
-            ("client_secret", CLIENT_SECRET.to_owned()),
-            ("duid", DUID.to_owned()),
-            ("scope", SCOPE.to_owned()),
-            (
-                "refresh_token",
-                self.refresh_token
-                    .as_ref()
-                    .map(String::as_str)
-                    .unwrap_or("lazy uncheck")
-                    .to_owned(),
-            ),
-            ("grant_type", "refresh_token".to_owned()),
-        ]
-    }
-
-    fn profile_encode(&self) -> String {
-        format!(
-            "https://{}{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary",
-            self.region.as_str(),
-            USERS_ENTRY,
-            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
-        )
-    }
-
-    fn trophy_summary_encode(&self, offset: u32) -> String {
-        format!(
-            "https://{}{}?fields=%40default&npLanguage={}&iconSize=m&platform=PS3,PSVITA,PS4&offset={}&limit=100&comparedUser={}",
-            self.region.as_str(),
-            USER_TROPHY_ENTRY,
-            self.language.as_str(),
-            offset,
-            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
-        )
-    }
-
-    fn trophy_set_encode(&self) -> String {
-        format!(
-            "https://{}{}{}/trophyGroups/all/trophies?fields=%40default,trophyRare,trophyEarnedRate&npLanguage={}&comparedUser={}",
-            self.region.as_str(),
-            USER_TROPHY_ENTRY,
-            self.np_communication_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck"),
-            self.language.as_str(),
-            self.online_id.as_ref().map(String::as_str).unwrap_or("lazy uncheck")
-        )
-    }
-
-    fn message_threads_encode(&self, offset: u32) -> String {
-        format!(
-            "https://{}{}?offset={}",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            offset
-        )
-    }
-
-    fn message_thread_encode(&self, thread_id: &str) -> String {
-        format!(
-            "https://{}{}/{}?fields=threadMembers,threadNameDetail,threadThumbnailDetail,threadProperty,latestTakedownEventDetail,newArrivalEventDetail,threadEvents&count=100",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            thread_id
-        )
-    }
-
-    fn generate_thread_encode(&self) -> String {
-        format!("https://{}{}/", self.region.as_str(), MESSAGE_THREAD_ENTRY)
-    }
-
-    fn leave_message_thread_encode(&self, thread_id: &str) -> String {
-        format!(
-            "https://{}{}/{}/users/me",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            thread_id
-        )
-    }
-
-    fn send_message_encode(&self, thread_id: &str) -> String {
-        format!(
-            "https://{}{}/{}/messages",
-            self.region.as_str(),
-            MESSAGE_THREAD_ENTRY,
-            thread_id
-        )
-    }
-}
-
-pub trait MultiPart {
-    /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
-    /// pass both as `None` will result in generating a new message thread body.
-    fn message_multipart_body(
-        &self,
-        boundary: &str,
-        message: Option<&str>,
-        file_path: Option<&str>,
-    ) -> Vec<u8>;
-
+    /// boundary is used to when making multipart request to PSN.
     fn generate_boundary() -> String {
         let mut boundary = String::with_capacity(50);
         boundary.push_str("--------------------------");
@@ -1247,52 +1359,56 @@ pub trait MultiPart {
     }
 }
 
-impl MultiPart for PSN {
-    fn message_multipart_body(
-        &self,
-        boundary: &str,
-        msg: Option<&str>,
-        path: Option<&str>,
-    ) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
+impl EncodeUrl for PSN {
+    fn uuid(&self) -> &str {
+        self.uuid
+            .as_ref()
+            .map(String::as_str)
+            .expect("uuid is None")
+    }
 
-        if msg.is_none() && path.is_none() {
-            let msg = serde_json::to_string(&GenerateNewThread::new(
-                self.online_id.as_ref().unwrap(),
-                self.self_online_id.as_ref(),
-            ))
-            .unwrap_or_else(|_| "".to_owned());
+    fn two_step(&self) -> &str {
+        self.two_step
+            .as_ref()
+            .map(String::as_str)
+            .expect("two_step is None")
+    }
 
-            write_string(&mut result, boundary, "threadDetail", msg.as_str());
-            return result;
-        };
+    fn access_token(&self) -> Option<&str> {
+        self.access_token.as_ref().map(String::as_str)
+    }
 
-        let event_category = if path.is_some() { 3u8 } else { 1 };
-        let msg = serde_json::to_string(&SendMessage::new(msg, event_category))
-            .unwrap_or_else(|_| "".to_owned());
+    fn refresh_token(&self) -> &str {
+        self.refresh_token
+            .as_ref()
+            .map(String::as_str)
+            .expect("refresh_token is None")
+    }
 
-        write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
+    fn region(&self) -> &str {
+        self.region.as_str()
+    }
 
-        if let Some(path) = path {
-            use std::io::prelude::*;
+    fn other_online_id(&self) -> &str {
+        self.other_online_id
+            .as_ref()
+            .map(String::as_str)
+            .expect("online_id is None")
+    }
 
-            //ToDo: handle error and write file async.
-            let mut f = std::fs::File::open(path).unwrap();
-            let mut file_data = Vec::new();
-            f.read_to_end(&mut file_data).unwrap();
+    fn self_online_id(&self) -> &str {
+        &self.self_online_id
+    }
 
-            result.extend_from_slice(
-                "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
-            );
-            result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
-            result.extend_from_slice(
-                format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
-            );
-            result.append(&mut file_data);
-            result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
-        }
+    fn language(&self) -> &str {
+        self.language.as_str()
+    }
 
-        result
+    fn np_communication_id(&self) -> &str {
+        self.np_communication_id
+            .as_ref()
+            .map(String::as_str)
+            .expect("np_communication_id is None")
     }
 }
 
@@ -1301,18 +1417,18 @@ fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
     result.extend_from_slice(
         format!("Content-Disposition: form-data; name=\"{}\"\r\n", name).as_bytes(),
     );
-    result.extend_from_slice("Content-Type: application/json; charset=utf-8\r\n\r\n".as_bytes());
+    result.extend_from_slice(b"Content-Type: application/json; charset=utf-8\r\n\r\n");
     result.extend_from_slice(format!("{}\r\n", msg).as_bytes());
     result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
 }
 
-#[cfg(feature = "awc")]
+#[cfg(feature = "default")]
 #[derive(Deserialize)]
 struct Npsso {
     npsso: String,
 }
 
-#[cfg(feature = "awc")]
+#[cfg(feature = "default")]
 #[derive(Deserialize)]
 struct Tokens {
     access_token: Option<String>,

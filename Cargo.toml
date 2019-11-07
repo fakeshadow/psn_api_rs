@@ -1,12 +1,12 @@
 [package]
 name = "psn_api_rs"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["fakeshadow <24548779@qq.com>"]
 edition = "2018"
 description = "A simple PSN Network API wrapper"
 keywords = ["game", "playstation", "psn"]
 license = "MIT"
-exclude = ["example/*"]
+exclude = ["examples/*"]
 repository = "https://github.com/fakeshadow/psn_api_rs"
 readme= "README.md"
 
@@ -14,18 +14,25 @@ readme= "README.md"
 name = "psn_api_rs"
 path = "src/lib.rs"
 
+[workspace]
+members = [
+  "examples/basic",
+  "examples/trait_only"
+]
+
 [features]
-default = []
-client = ["awc"]
+default = [ "hyper", "hyper-tls", "serde_urlencoded", "tokio-fs" ]
 
 [dependencies]
-awc = { version ="0.2.4", features = ["rust-tls"] , optional = true}
 derive_more = "0.14.1"
-futures = "0.1.28"
-rand = "0.7.0"
-serde = "1.0.98"
-serde_derive = "1.0.98"
+hyper = { version = "=0.13.0-alpha.4", optional = true, default-features = false }
+hyper-tls = { version = "=0.4.0-alpha.4", optional = true }
+rand = "0.7.1"
+serde = "1.0.101"
+serde_derive = "1.0.101"
 serde_json = "1.0.40"
+serde_urlencoded = { version = "0.6.1", optional = true }
+tokio-fs = { version = "=0.2.0-alpha.6", optional = true }
 
 [dev-dependencies]
-tokio = "0.1.22"
+tokio = "=0.2.0-alpha.6"
