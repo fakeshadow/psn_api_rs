@@ -1,12 +1,12 @@
 [package]
 name = "psn_api_rs"
-version = "0.2.0-beta"
+version = "0.2.0"
 authors = ["fakeshadow <24548779@qq.com>"]
 edition = "2018"
 description = "A simple PSN Network API wrapper"
 keywords = ["game", "playstation", "psn"]
 license = "MIT"
-exclude = ["example/*"]
+exclude = ["examples/*"]
 repository = "https://github.com/fakeshadow/psn_api_rs"
 readme= "README.md"
 
@@ -14,14 +14,19 @@ readme= "README.md"
 name = "psn_api_rs"
 path = "src/lib.rs"
 
+[workspace]
+members = [
+  "examples/basic",
+  "examples/trait_only"
+]
+
 [features]
-default = [ "futures-preview", "hyper", "hyper-tls", "serde_urlencoded", "tokio-fs" ]
+default = [ "hyper", "hyper-tls", "serde_urlencoded", "tokio-fs" ]
 
 [dependencies]
 derive_more = "0.14.1"
 hyper = { version = "=0.13.0-alpha.4", optional = true, default-features = false }
 hyper-tls = { version = "=0.4.0-alpha.4", optional = true }
-futures-preview = { version = "=0.3.0-alpha.19", features = [ "async-await" ], optional = true }
 rand = "0.7.1"
 serde = "1.0.101"
 serde_derive = "1.0.101"

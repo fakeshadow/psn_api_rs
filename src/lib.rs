@@ -2,15 +2,16 @@
 //! It uses an async http client(hyper::Client in this case) to communicate wih the official PSN API.
 //!
 //! Some basics:
-//! The crate use a pair of `uuid` and `two_step` code to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
+//! The crate use a pair of `uuid` and `two_step` tokens to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
+//! [How to obtain uuid and two_step tokens](https://tusticles.com/psn-php/first_login.html)
 //! The `access_token` last about an hour before expire and it's needed to call most other PSN APIs(The PSN store API doesn't need any token to access though).
 //! The `refresh_token` last much longer and it's used to generate a new access_token after/before it is expired.
 //! * Some thing to note:
 //! There is a rate limiter for the official PSN API so better not make lots of calls in short time.
-//! Therefore its' best to avoid using in multi threads also as a single thread could hit the limit easily on any given machine running this crate.
+//! Therefore its' best to avoid using in multi threads as a single thread could hit the limit easily on any given machine running this crate.
 //!
 //! # Example:
-//!``` rust
+//!```no_run
 //!use psn_api_rs::{PSNRequest, PSN, models::PSNUser};
 //!
 //!#[tokio::main]
@@ -61,25 +62,25 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use rand::{distributions::Alphanumeric, Rng};
+use serde::de::DeserializeOwned;
+
 #[cfg(feature = "default")]
 use {
     derive_more::Display,
-    futures::TryFutureExt,
     hyper::{
         client::{connect::dns::GaiResolver, HttpConnector},
         header, Body, Client, Method, Request,
     },
-    hyper_tls::HttpsConnector
+    hyper_tls::HttpsConnector,
 };
-use rand::{distributions::Alphanumeric, Rng};
-use serde::de::DeserializeOwned;
 
 use crate::models::MessageDetail;
 
 /// `urls` are hard coded for PSN authentication which are used if you want to impl your own http client.
 pub mod urls {
     /// grant code entry is generate with this pattern
-    /// ```rust
+    /// ```ignore
     /// format!("https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?duid={}&app_context=inapp_ios&client_id={}&scope={}&response_type=code", DUID, CLIENT_ID, SCOPE);
     /// ```
     pub const GRANT_CODE_ENTRY: &str =
@@ -606,7 +607,7 @@ pub struct PSN {
     two_step: Option<String>,
     refresh_token: Option<String>,
     last_refresh_at: Option<Instant>,
-    online_id: Option<String>,
+    other_online_id: Option<String>,
     np_id: Option<String>,
     np_communication_id: Option<String>,
     language: String,
@@ -644,7 +645,7 @@ impl Default for PSN {
             two_step: None,
             refresh_token: None,
             last_refresh_at: None,
-            online_id: None,
+            other_online_id: None,
             np_id: None,
             np_communication_id: None,
             language: "en".to_owned(),
@@ -697,7 +698,7 @@ impl PSN {
 
     /// `online_id` is the displayed online_id of PSN user which used to query user's info.
     pub fn add_online_id(&mut self, online_id: String) -> &mut Self {
-        self.online_id = Some(online_id);
+        self.other_online_id = Some(online_id);
         self
     }
 
@@ -711,6 +712,21 @@ impl PSN {
     pub fn add_np_communication_id(&mut self, np_communication_id: String) -> &mut Self {
         self.np_communication_id = Some(np_communication_id);
         self
+    }
+
+    pub fn set_access_token(&mut self, access_token: Option<String>) -> &mut Self {
+        self.access_token = access_token;
+        self
+    }
+
+    pub fn set_refresh_token(&mut self, refresh_token: Option<String>) -> &mut Self {
+        self.refresh_token = refresh_token;
+        self
+    }
+
+    /// set refresh time to now.
+    pub fn set_refresh(&mut self) {
+        self.last_refresh_at = Some(Instant::now());
     }
 
     /// check if it's about time the access_token expires.
@@ -733,13 +749,6 @@ pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
 /// methods with multiple lifetimes always use args with shorter lifetime than self and the returned future.
 pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     type Error;
-
-    /// getter used in `PSNRequest::message_multipart_body` method.
-    fn other_online_id(&self) -> &str;
-
-    fn self_online_id(&self) -> &str {
-        self.online_id()
-    }
 
     fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
@@ -779,7 +788,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     ) -> PSNFuture<'s, Result<(), Self::Error>>;
 
     /// need to `add_online_id` before call this method.
-    /// ```rust
+    /// ```ignore
     /// crate::PSN::new().add_online_id(String::from("123")).get_rofile()
     /// ```
     fn get_profile<T: DeserializeOwned + 'static>(&self) -> PSNFuture<Result<T, Self::Error>> {
@@ -790,7 +799,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     }
 
     /// need to `add_online_id` and give a legit `offset`(offset can't be larger than the total trophy lists a user have).
-    /// ```rust
+    /// ```ignore
     /// crate::PSN::new().add_online_id(String::from("123")).get_titles(0)
     /// ```
     fn get_titles<T: DeserializeOwned + 'static>(
@@ -804,7 +813,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     }
 
     /// need to `add_online_id` and `add_np_communication_id` before call this method.
-    /// ```rust
+    /// ```ignore
     /// crate::PSN::new().add_online_id(String::from("123")).add_np_communication_id(String::from("NPWR00233")).get_trophy_set()
     /// ```
     fn get_trophy_set<T: DeserializeOwned + 'static>(&self) -> PSNFuture<Result<T, Self::Error>> {
@@ -839,7 +848,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
     /// need to `add_online_id` and `set_self_online_id` before call this method.
     /// Note that `set_self_online_id` take mut self while `add_online_id` take a &mut self. So `set_self_online_id` should be use as the first arg here.
-    /// ```rust
+    /// ```ignore
     /// crate::PSN::new().set_self_online_id(String::from("NPWR00233")).add_online_id(String::from("123")).generate_message_thread()
     /// ```
     fn generate_message_thread(&self) -> PSNFuture<Result<(), Self::Error>> {
@@ -923,7 +932,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
             write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
 
             if let Some(path) = path {
-                let mut file_data = Self::read_path(path).await?;
+                let file_data = Self::read_path(path).await?;
 
                 result.extend_from_slice(b"Content-Disposition: form-data; name=\"imageData\"\r\n");
                 result.extend_from_slice(b"Content-Type: image/png\r\n");
@@ -937,7 +946,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
                     format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
                 );
                 // ToDo: in case extend failed
-                result.extend_from_slice(&mut file_data);
+                result.extend_from_slice(&file_data);
                 result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
             }
 
@@ -961,9 +970,6 @@ impl PSN {
 #[cfg(feature = "default")]
 impl PSNRequest for PSN {
     type Error = PSNError;
-    fn other_online_id(&self) -> &str {
-        self.online_id.as_ref().unwrap()
-    }
 
     fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
         Box::pin(async move {
@@ -1011,9 +1017,10 @@ impl PSNRequest for PSN {
 
             let tokens = gen_tokens_common(&client, body).await?;
 
-            self.last_refresh_at = Some(Instant::now());
-            self.access_token = tokens.access_token;
-            self.refresh_token = tokens.refresh_token;
+            self.set_access_token(tokens.access_token)
+                .set_refresh_token(tokens.refresh_token)
+                .set_refresh();
+
             Ok(())
         })
     }
@@ -1029,8 +1036,9 @@ impl PSNRequest for PSN {
 
             let tokens = gen_tokens_common(&client, body).await?;
 
-            self.last_refresh_at = Some(Instant::now());
-            self.access_token = tokens.access_token;
+            self.set_access_token(tokens.access_token)
+                .set_refresh();
+
             Ok(())
         })
     }
@@ -1051,7 +1059,7 @@ impl PSNRequest for PSN {
                     .header(header::CONTENT_TYPE, "application/json");
 
                 // there are api endpoints that don't need access_token to access so we only add bearer token when we have it.
-                if let Some(token) = self.access_token.as_ref() {
+                if let Some(token) = self.access_token() {
                     req.header(header::AUTHORIZATION, format!("Bearer {}", token));
                 }
 
@@ -1087,7 +1095,10 @@ impl PSNRequest for PSN {
                 .uri(url)
                 .header(
                     header::AUTHORIZATION,
-                    format!("Bearer {}", self.access_token.as_ref().unwrap()),
+                    format!(
+                        "Bearer {}",
+                        self.access_token().expect("access_token is None")
+                    ),
                 )
                 .body(Body::empty())
                 .expect("failed to build request which should not happen");
@@ -1118,7 +1129,10 @@ impl PSNRequest for PSN {
                     )
                     .header(
                         header::AUTHORIZATION,
-                        format!("Bearer {}", self.access_token.as_ref().unwrap()),
+                        format!(
+                            "Bearer {}",
+                            self.access_token().expect("access_token is None")
+                        ),
                     )
                     .body(body.into())
                     .expect("failed to build request which should not happen");
@@ -1131,11 +1145,12 @@ impl PSNRequest for PSN {
     }
 
     fn read_path(path: &str) -> PSNFuture<Result<Cow<'static, [u8]>, Self::Error>> {
-        Box::pin(
+        Box::pin(async move {
             tokio_fs::read(path)
+                .await
+                .map(Cow::Owned)
                 .map_err(PSNError::FromStd)
-                .map_ok(Cow::Owned),
-        )
+        })
     }
 }
 
@@ -1188,8 +1203,8 @@ async fn res_to_bytes(res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
 
 /// serde_urlencoded can be used to make a `application/x-wwww-url-encoded` `String` buffer from form
 /// it applies to `EncodeUrl` methods return a slice type.
-/// example if your http client don't support auto urlencode convert.
-/// ```rust
+/// examples if your http client don't support auto urlencode convert.
+/// ```ignore
 /// use psn_api_rs::{PSN, EncodeUrl};
 /// use serde_urlencoded;
 /// impl PSN {
@@ -1201,9 +1216,11 @@ async fn res_to_bytes(res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
 pub trait EncodeUrl {
     fn uuid(&self) -> &str;
     fn two_step(&self) -> &str;
+    fn access_token(&self) -> Option<&str>;
     fn refresh_token(&self) -> &str;
     fn region(&self) -> &str;
-    fn online_id(&self) -> &str;
+    fn other_online_id(&self) -> &str;
+    fn self_online_id(&self) -> &str;
     fn language(&self) -> &str;
     fn np_communication_id(&self) -> &str;
 
@@ -1228,7 +1245,6 @@ pub trait EncodeUrl {
     }
 
     fn oauth_token_refresh_encode(&self) -> [(&'static str, &str); 7] {
-
         [
             ("app_context", "inapp_ios"),
             ("client_id", CLIENT_ID),
@@ -1245,7 +1261,7 @@ pub trait EncodeUrl {
             "https://{}{}{}/profile?fields=%40default,relation,requestMessageFlag,presence,%40personalDetail,trophySummary",
             self.region(),
             USERS_ENTRY,
-            self.online_id()
+            self.other_online_id()
         )
     }
 
@@ -1256,7 +1272,7 @@ pub trait EncodeUrl {
             USER_TROPHY_ENTRY,
             self.language(),
             offset,
-            self.online_id()
+            self.other_online_id()
         )
     }
 
@@ -1267,7 +1283,7 @@ pub trait EncodeUrl {
             USER_TROPHY_ENTRY,
             self.np_communication_id(),
             self.language(),
-            self.online_id()
+            self.other_online_id()
         )
     }
 
@@ -1348,32 +1364,40 @@ impl EncodeUrl for PSN {
         self.uuid
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck")
+            .expect("uuid is None")
     }
 
     fn two_step(&self) -> &str {
         self.two_step
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck")
+            .expect("two_step is None")
+    }
+
+    fn access_token(&self) -> Option<&str> {
+        self.access_token.as_ref().map(String::as_str)
     }
 
     fn refresh_token(&self) -> &str {
         self.refresh_token
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck")
+            .expect("refresh_token is None")
     }
 
     fn region(&self) -> &str {
         self.region.as_str()
     }
 
-    fn online_id(&self) -> &str {
-        self.online_id
+    fn other_online_id(&self) -> &str {
+        self.other_online_id
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck")
+            .expect("online_id is None")
+    }
+
+    fn self_online_id(&self) -> &str {
+        &self.self_online_id
     }
 
     fn language(&self) -> &str {
@@ -1384,7 +1408,7 @@ impl EncodeUrl for PSN {
         self.np_communication_id
             .as_ref()
             .map(String::as_str)
-            .unwrap_or("lazy uncheck")
+            .expect("np_communication_id is None")
     }
 }
 

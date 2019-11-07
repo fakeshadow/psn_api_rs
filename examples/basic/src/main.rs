@@ -4,7 +4,7 @@ use psn_api_rs::{
     models::{
         MessageThread, MessageThreadsSummary, PSNUser, StoreSearchResult, TrophySet, TrophyTitles,
     },
-    PSN, PSNRequest,
+    PSNRequest, PSN,
 };
 
 #[tokio::main]
@@ -37,7 +37,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!("\r\nGot example user info : \r\n{:#?}", user);
+    println!("\r\nGot examples user info : \r\n{:#?}", user);
 
     // get psn user trophy lists by online id
     let titles: TrophyTitles = psn
@@ -46,7 +46,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!("\r\nGot example trophy titles info : \r\n{:#?}", titles);
+    println!("\r\nGot examples trophy titles info : \r\n{:#?}", titles);
 
     //get one game trophy detailed list by online id and game np communication id
     let set: TrophySet = psn
@@ -56,7 +56,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!("\r\nGot example trophy set info : \r\n{:#?}", set);
+    println!("\r\nGot examples trophy set info : \r\n{:#?}", set);
 
     //get self message threads
     let threads: MessageThreadsSummary = psn
@@ -64,7 +64,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!("\r\nGot example threads info : \r\n{:#?}", threads);
+    println!("\r\nGot examples threads info : \r\n{:#?}", threads);
 
     //get the last message thread detail. if the account have at least one message thread.
     match threads.threads.first() {
@@ -74,9 +74,9 @@ async fn main() -> std::io::Result<()> {
                 .await
                 .unwrap_or_else(|e| panic!("{:?}", e));
 
-            println!("\r\nGot example thread detail info : \r\n{:#?}", thread);
+            println!("\r\nGot examples thread detail info : \r\n{:#?}", thread);
         }
-        None => println!("\r\nIt seems this account doesn't have any threads so thread detail example is skipped")
+        None => println!("\r\nIt seems this account doesn't have any threads so thread detail examples is skipped")
     }
 
     // store apis don't need authentication.
@@ -86,15 +86,14 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    println!("Got example PSN store response: {:#?}", search);
+    println!("Got examples PSN store response: {:#?}", search);
 
-    println!("\r\n\r\nThe example is finished and all api endpoints are good");
+    println!("\r\n\r\nThe examples is finished and all api endpoints are good");
     println!("\r\n\r\npsn struct is dropped at this point so it's better to store your access_token and refresh_token locally to make sure they can be reused");
     println!("Your psn info is : {:#?}", psn);
 
     Ok(())
 }
-
 
 // helper function to collect input
 fn collect_input() -> (String, String, String) {
