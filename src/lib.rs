@@ -69,6 +69,7 @@ use serde::de::DeserializeOwned;
 use {
     derive_more::Display,
     hyper::{
+        body::HttpBody,
         client::{connect::dns::GaiResolver, HttpConnector},
         header, Body, Client, Method, Request,
     },
@@ -664,7 +665,7 @@ impl PSN {
     }
 
     pub fn get_refresh_token(&self) -> Option<&str> {
-        self.refresh_token.as_ref().map(String::as_str)
+        self.refresh_token.as_deref()
     }
 
     pub fn add_uuid(mut self, uuid: String) -> Self {
@@ -962,7 +963,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 impl PSN {
     /// default http client `hyper::Client` with `hyper-tls` as https connector
     fn build_cli() -> Client<HttpsConnector<HttpConnector<GaiResolver>>> {
-        let https = HttpsConnector::new().unwrap();
+        let https = HttpsConnector::new();
         Client::builder().build::<_, Body>(https)
     }
 }
@@ -1036,8 +1037,7 @@ impl PSNRequest for PSN {
 
             let tokens = gen_tokens_common(&client, body).await?;
 
-            self.set_access_token(tokens.access_token)
-                .set_refresh();
+            self.set_access_token(tokens.access_token).set_refresh();
 
             Ok(())
         })
@@ -1052,15 +1052,14 @@ impl PSNRequest for PSN {
             async move {
                 let client = PSN::build_cli();
 
-                let mut req = Request::builder();
-
-                req.method(Method::GET)
+                let mut req = Request::builder()
+                    .method(Method::GET)
                     .uri(url)
                     .header(header::CONTENT_TYPE, "application/json");
 
                 // there are api endpoints that don't need access_token to access so we only add bearer token when we have it.
                 if let Some(token) = self.access_token() {
-                    req.header(header::AUTHORIZATION, format!("Bearer {}", token));
+                    req = req.header(header::AUTHORIZATION, format!("Bearer {}", token));
                 }
 
                 let req = req
@@ -1146,7 +1145,7 @@ impl PSNRequest for PSN {
 
     fn read_path(path: &str) -> PSNFuture<Result<Cow<'static, [u8]>, Self::Error>> {
         Box::pin(async move {
-            tokio_fs::read(path)
+            tokio::fs::read(path)
                 .await
                 .map(Cow::Owned)
                 .map_err(PSNError::FromStd)
@@ -1191,10 +1190,9 @@ fn general_request_builder(url: &str, body: impl Into<Body>) -> Request<Body> {
 }
 
 #[cfg(feature = "default")]
-async fn res_to_bytes(res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
-    let mut body = res.into_body();
+async fn res_to_bytes(mut res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
     let mut bytes = Vec::new();
-    while let Some(next) = body.next().await {
+    while let Some(next) = res.data().await {
         let chunk = next.map_err(|_| PSNError::PayLoad)?;
         bytes.extend(chunk);
     }
@@ -1361,27 +1359,20 @@ pub trait EncodeUrl {
 
 impl EncodeUrl for PSN {
     fn uuid(&self) -> &str {
-        self.uuid
-            .as_ref()
-            .map(String::as_str)
-            .expect("uuid is None")
+        self.uuid.as_deref().expect("uuid is None")
     }
 
     fn two_step(&self) -> &str {
-        self.two_step
-            .as_ref()
-            .map(String::as_str)
-            .expect("two_step is None")
+        self.two_step.as_deref().expect("two_step is None")
     }
 
     fn access_token(&self) -> Option<&str> {
-        self.access_token.as_ref().map(String::as_str)
+        self.access_token.as_deref()
     }
 
     fn refresh_token(&self) -> &str {
         self.refresh_token
-            .as_ref()
-            .map(String::as_str)
+            .as_deref()
             .expect("refresh_token is None")
     }
 
@@ -1390,10 +1381,7 @@ impl EncodeUrl for PSN {
     }
 
     fn other_online_id(&self) -> &str {
-        self.other_online_id
-            .as_ref()
-            .map(String::as_str)
-            .expect("online_id is None")
+        self.other_online_id.as_deref().expect("online_id is None")
     }
 
     fn self_online_id(&self) -> &str {
@@ -1406,8 +1394,7 @@ impl EncodeUrl for PSN {
 
     fn np_communication_id(&self) -> &str {
         self.np_communication_id
-            .as_ref()
-            .map(String::as_str)
+            .as_deref()
             .expect("np_communication_id is None")
     }
 }

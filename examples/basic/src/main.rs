@@ -122,6 +122,14 @@ https://tusticles.com/psn-php/first_login.html\r\n");
         trim(&mut two_step);
     }
 
+    if refresh_token.is_empty() && uuid.is_empty() && two_step.is_empty() {
+        panic!("must provide refresh_token or uuid/two_step to proceed");
+    }
+
+    if refresh_token.is_empty() && (uuid.is_empty() || two_step.is_empty()) {
+        panic!("must provide both uuid and two_step to proceed");
+    }
+
     println!("Please wait for the PSN network to response. The program will panic if there is an error occur\r\n");
 
     (refresh_token, uuid, two_step)
