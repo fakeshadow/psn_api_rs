@@ -9,18 +9,17 @@ use psn_api_rs::{
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let (refresh_token, uuid, two_step) = collect_input();
+    let (refresh_token, npsso) = collect_input();
 
     let mut psn =
-        // construct a new PSN struct, add args and call auth to generate tokens which are need to call other PSN APIs.
+        // construct a new PSN object, add args and call auth to generate tokens which are need to call other PSN APIs.
         PSN::new()
             .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
             .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
             .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
             // safe to leave unset if you don't need to send any PSN message.
-            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
-            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
-            .add_two_step(two_step)
+            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore add_npsso and call auth directly.
+            .add_npsso(npsso) // <- npsso is used only when refresh_token is not working or not provided.
             .auth()
             .await
             .unwrap_or_else(|e| panic!("{:?}", e));
@@ -96,10 +95,9 @@ async fn main() -> std::io::Result<()> {
 }
 
 // helper function to collect input
-fn collect_input() -> (String, String, String) {
+fn collect_input() -> (String, String) {
     let mut refresh_token = String::new();
-    let mut uuid = String::new();
-    let mut two_step = String::new();
+    let mut npsso = String::new();
 
     println!(
         "Pleas input your refresh_token if you already have one. Press enter to skip to next\r\n"
@@ -109,30 +107,21 @@ fn collect_input() -> (String, String, String) {
     trim(&mut refresh_token);
 
     if refresh_token.is_empty() {
-        println!("Please input your uuid and press enter to continue.\r\n
-You can check this link below to see how to get one paired with a two_step code which will be needed later\r\n
+        println!("Please input your npsso and press enter to continue.\r\n
+You can check this link below to see how to get one\r\n
 https://tusticles.com/psn-php/first_login.html\r\n");
 
-        stdin().read_line(&mut uuid).unwrap();
-        trim(&mut uuid);
-
-        println!("Please input your two_step code to continue.\r\n");
-
-        stdin().read_line(&mut two_step).unwrap();
-        trim(&mut two_step);
+        stdin().read_line(&mut npsso).unwrap();
+        trim(&mut npsso);
     }
 
-    if refresh_token.is_empty() && uuid.is_empty() && two_step.is_empty() {
-        panic!("must provide refresh_token or uuid/two_step to proceed");
-    }
-
-    if refresh_token.is_empty() && (uuid.is_empty() || two_step.is_empty()) {
-        panic!("must provide both uuid and two_step to proceed");
+    if refresh_token.is_empty() && npsso.is_empty()  {
+        panic!("must provide refresh_token or npsso to proceed");
     }
 
     println!("Please wait for the PSN network to response. The program will panic if there is an error occur\r\n");
 
-    (refresh_token, uuid, two_step)
+    (refresh_token, npsso)
 }
 
 fn trim(s: &mut String) {

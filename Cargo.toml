@@ -1,6 +1,6 @@
 [package]
 name = "psn_api_rs"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["fakeshadow <24548779@qq.com>"]
 edition = "2018"
 description = "A simple PSN Network API wrapper"

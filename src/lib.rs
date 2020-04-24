@@ -2,13 +2,12 @@
 //! It uses an async http client(hyper::Client in this case) to communicate wih the official PSN API.
 //!
 //! Some basics:
-//! The crate use a pair of `uuid` and `two_step` tokens to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
+//! The crate use `npsso` code to login in to PSN Network and get a pair of `access_token` and `refresh_token` in response.
 //! [How to obtain uuid and two_step tokens](https://tusticles.com/psn-php/first_login.html)
 //! The `access_token` last about an hour before expire and it's needed to call most other PSN APIs(The PSN store API doesn't need any token to access though).
 //! The `refresh_token` last much longer and it's used to generate a new access_token after/before it is expired.
 //! * Some thing to note:
 //! There is a rate limiter for the official PSN API so better not make lots of calls in short time.
-//! Therefore its' best to avoid using in multi threads as a single thread could hit the limit easily on any given machine running this crate.
 //!
 //! # Example:
 //!```no_run
@@ -17,18 +16,16 @@
 //!#[tokio::main]
 //!async fn main() -> std::io::Result<()> {
 //!    let refresh_token = String::from("your refresh token");
-//!    let uuid = String::from("your uuid");
-//!    let two_step = String::from("your two_step code");
+//!    let npsso = String::from("your npsso");
 //!
-//!    // construct a PSN struct,add credentials and call auth to generate tokens.
+//!    // construct a PSN object,add credentials and call auth to generate tokens.
 //!    let mut psn: PSN = PSN::new()
 //!            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
 //!            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
 //!            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
 //!                                                                    // safe to leave unset if you don't need to send any PSN message.
-//!            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore uuid and two_step arg and call .auth() directly.
-//!            .add_uuid(uuid) // <- uuid and two_step are used only when refresh_token is not working or not provided.
-//!            .add_two_step(two_step)
+//!            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore add_npsso and call .auth() directly.
+//!            .add_npsso(npsso) // <- npsso is used only when refresh_token is not working or not provided.
 //!            .auth()
 //!            .await
 //!            .unwrap_or_else(|e| panic!("{:?}", e));
@@ -80,15 +77,6 @@ use crate::models::MessageDetail;
 
 /// `urls` are hard coded for PSN authentication which are used if you want to impl your own http client.
 pub mod urls {
-    /// grant code entry is generate with this pattern
-    /// ```ignore
-    /// format!("https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?duid={}&app_context=inapp_ios&client_id={}&scope={}&response_type=code", DUID, CLIENT_ID, SCOPE);
-    /// ```
-    pub const GRANT_CODE_ENTRY: &str =
-        "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?duid=0000000d000400808F4B3AA3301B4945B2E3636E38C0DDFC&app_context=inapp_ios&client_id=b7cbf451-6bb6-4a5a-8913-71e61f462787&scope=capone:report_submission,psn:sceapp,user:account.get,user:account.settings.privacy.get,user:account.settings.privacy.update,user:account.realName.get,user:account.realName.update,kamaji:get_account_hash,kamaji:ugc:distributor,oauth:manage_device_usercodes&response_type=code";
-
-    pub const NP_SSO_ENTRY: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/ssocookie";
-
     pub const OAUTH_TOKEN_ENTRY: &str =
         "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/token";
 }
@@ -604,8 +592,7 @@ pub struct PSN {
     region: String,
     self_online_id: String,
     access_token: Option<String>,
-    uuid: Option<String>,
-    two_step: Option<String>,
+    npsso: Option<String>,
     refresh_token: Option<String>,
     last_refresh_at: Option<Instant>,
     other_online_id: Option<String>,
@@ -624,10 +611,6 @@ pub enum PSNError {
     NetWork,
     #[display(fmt = "Can't properly parse response body")]
     PayLoad,
-    #[display(fmt = "Can not extract np_sso_cookie from response body")]
-    NoNPSSO,
-    #[display(fmt = "Can not extract grand code from response header")]
-    NoGrantCode,
     #[display(fmt = "Can not extract access and/or refresh token(s) from response body")]
     Tokens,
     #[display(fmt = "Error from PSN response: {}", _0)]
@@ -642,8 +625,7 @@ impl Default for PSN {
             region: "hk".to_owned(),
             self_online_id: "".to_owned(),
             access_token: None,
-            uuid: None,
-            two_step: None,
+            npsso: None,
             refresh_token: None,
             last_refresh_at: None,
             other_online_id: None,
@@ -660,7 +642,9 @@ impl PSN {
     }
 
     pub fn add_refresh_token(mut self, refresh_token: String) -> Self {
-        self.refresh_token = Some(refresh_token);
+        if refresh_token.len() > 0 {
+            self.refresh_token = Some(refresh_token);
+        }
         self
     }
 
@@ -668,13 +652,10 @@ impl PSN {
         self.refresh_token.as_deref()
     }
 
-    pub fn add_uuid(mut self, uuid: String) -> Self {
-        self.uuid = Some(uuid);
-        self
-    }
-
-    pub fn add_two_step(mut self, two_step: String) -> Self {
-        self.two_step = Some(two_step);
+    pub fn add_npsso(mut self, npsso: String) -> Self {
+        if npsso.len() > 0 {
+            self.npsso = Some(npsso);
+        }
         self
     }
 
@@ -743,7 +724,7 @@ impl PSN {
 }
 
 /// type alias to stop clippy from complaining
-pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
+pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output=T> + Send + 's>>;
 
 /// You can override `PSNRequest` trait to impl your preferred http client
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
@@ -751,7 +732,7 @@ pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
 pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     type Error;
 
-    fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
+    fn auth(mut self) -> Pin<Box<dyn Future<Output=Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
             if self.gen_access_and_refresh().await.is_err() {
                 self.gen_access_from_refresh().await?;
@@ -920,7 +901,7 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
                     self.other_online_id(),
                     self.self_online_id(),
                 ))
-                .unwrap_or_else(|_| "".to_owned());
+                    .unwrap_or_else(|_| "".to_owned());
 
                 write_string(&mut result, boundary, "threadDetail", msg.as_str());
                 return Ok(Cow::Owned(result));
@@ -974,49 +955,25 @@ impl PSNRequest for PSN {
 
     fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
         Box::pin(async move {
+            let npsso = self.npsso().ok_or(PSNError::Tokens)?;
+
             let client = PSN::build_cli();
 
-            let body_string = serde_urlencoded::to_string(&self.np_sso_url_encode())
+            let string_body = serde_urlencoded::to_string(&PSN::oauth_token_encode())
                 .expect("This should not fail");
 
-            let req = general_request_builder(urls::NP_SSO_ENTRY, body_string);
-
-            // User uuid and two_step code to make a post request.
-
-            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-
-            let bytes = res_to_bytes(res).await?;
-
-            /*
-                At this point the uuid and two_step code are consumed and can't be used anymore.
-                If you failed from this point for any reason the only way to start over is to get a new pair of uuid and two_step code.
-            */
-
-            // Extract the np_sso cookie as string from the response json body.
-            let npsso: Npsso = serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)?;
-
-            // Use the np_sso we get as a cookie header.
+            // Use the npsso as a cookie header.
             let req = Request::builder()
-                .method(Method::GET)
-                .uri(urls::GRANT_CODE_ENTRY)
-                .header("Cookie", format!("npsso={}", npsso.npsso))
+                .method(Method::POST)
+                .uri(urls::OAUTH_TOKEN_ENTRY)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::empty())
-                .expect("failed to build request which should not happen");
+                .header("Cookie", format!("npsso={}", npsso))
+                .body(string_body.into())
+                .expect("failed to build first auth request which should not happen");
 
             let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-
-            // Extract the "x-np-grant-code" from the response header and parse it to &str.
-            let grant = match res.headers().get("x-np-grant-code") {
-                Some(h) => h.to_str().unwrap(),
-                None => return Err(PSNError::NoGrantCode),
-            };
-
-            // Use the grant code to make another post request to finish the authentication process.
-            let body = serde_urlencoded::to_string(&PSN::oauth_token_encode(grant))
-                .expect("This should not fail");
-
-            let tokens = gen_tokens_common(&client, body).await?;
+            let bytes = res_to_bytes(res).await?;
+            let tokens = serde_json::from_slice::<Tokens>(&bytes).map_err(|_| PSNError::PayLoad)?;
 
             self.set_access_token(tokens.access_token)
                 .set_refresh_token(tokens.refresh_token)
@@ -1028,14 +985,21 @@ impl PSNRequest for PSN {
 
     fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
         Box::pin(async move {
-            // Basically the same process as the last step of gen_access_and_refresh method with a slightly different url encode.
-            // We only need the new access token from response.(refresh token can't be refreshed.)
             let client = PSN::build_cli();
 
-            let body = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
+            let body_string = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
                 .expect("This should not fail");
 
-            let tokens = gen_tokens_common(&client, body).await?;
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri(urls::OAUTH_TOKEN_ENTRY)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(body_string.into())
+                .expect("failed to build refresh auth request which should not happen");
+
+            let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
+            let bytes = res_to_bytes(res).await?;
+            let tokens = serde_json::from_slice::<Tokens>(&bytes).map_err(|_| PSNError::PayLoad)?;
 
             self.set_access_token(tokens.access_token).set_refresh();
 
@@ -1165,31 +1129,6 @@ async fn if_parser_error(res: hyper::Response<Body>, code: u16) -> Result<(), PS
 }
 
 #[cfg(feature = "default")]
-async fn gen_tokens_common(
-    client: &Client<HttpsConnector<HttpConnector<GaiResolver>>>,
-    body_string: String,
-) -> Result<Tokens, PSNError> {
-    let req = general_request_builder(urls::OAUTH_TOKEN_ENTRY, body_string);
-
-    let res = client.request(req).await.map_err(|_| PSNError::NetWork)?;
-
-    let bytes = res_to_bytes(res).await?;
-
-    // Extract the access_token and/or refresh_token from the response body json.
-    serde_json::from_slice(&bytes).map_err(|_| PSNError::PayLoad)
-}
-
-#[cfg(feature = "default")]
-fn general_request_builder(url: &str, body: impl Into<Body>) -> Request<Body> {
-    Request::builder()
-        .method(Method::POST)
-        .uri(url)
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(body.into())
-        .expect("failed to build request which should not happen")
-}
-
-#[cfg(feature = "default")]
 async fn res_to_bytes(mut res: hyper::Response<Body>) -> Result<Vec<u8>, PSNError> {
     let mut bytes = Vec::new();
     while let Some(next) = res.data().await {
@@ -1212,8 +1151,7 @@ async fn res_to_bytes(mut res: hyper::Response<Body>) -> Result<Vec<u8>, PSNErro
 /// }
 /// ```
 pub trait EncodeUrl {
-    fn uuid(&self) -> &str;
-    fn two_step(&self) -> &str;
+    fn npsso(&self) -> Option<&str>;
     fn access_token(&self) -> Option<&str>;
     fn refresh_token(&self) -> &str;
     fn region(&self) -> &str;
@@ -1222,23 +1160,12 @@ pub trait EncodeUrl {
     fn language(&self) -> &str;
     fn np_communication_id(&self) -> &str;
 
-    fn np_sso_url_encode(&self) -> [(&'static str, &str); 4] {
-        [
-            ("authentication_type", "two_step"),
-            ("client_id", CLIENT_ID),
-            ("ticket_uuid", self.uuid()),
-            ("code", self.two_step()),
-        ]
-    }
-
-    fn oauth_token_encode(grant_code: &str) -> [(&'static str, &str); 6] {
+    fn oauth_token_encode() -> [(&'static str, &'static str); 4] {
         [
             ("client_id", CLIENT_ID),
             ("client_secret", CLIENT_SECRET),
-            ("duid", DUID),
             ("scope", SCOPE),
-            ("code", grant_code),
-            ("grant_type", "authorization_code"),
+            ("grant_type", "sso_cookie"),
         ]
     }
 
@@ -1358,12 +1285,8 @@ pub trait EncodeUrl {
 }
 
 impl EncodeUrl for PSN {
-    fn uuid(&self) -> &str {
-        self.uuid.as_deref().expect("uuid is None")
-    }
-
-    fn two_step(&self) -> &str {
-        self.two_step.as_deref().expect("two_step is None")
+    fn npsso(&self) -> Option<&str> {
+        self.npsso.as_deref()
     }
 
     fn access_token(&self) -> Option<&str> {
@@ -1407,12 +1330,6 @@ fn write_string(result: &mut Vec<u8>, boundary: &str, name: &str, msg: &str) {
     result.extend_from_slice(b"Content-Type: application/json; charset=utf-8\r\n\r\n");
     result.extend_from_slice(format!("{}\r\n", msg).as_bytes());
     result.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
-}
-
-#[cfg(feature = "default")]
-#[derive(Deserialize)]
-struct Npsso {
-    npsso: String,
 }
 
 #[cfg(feature = "default")]

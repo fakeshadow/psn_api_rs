@@ -2,9 +2,9 @@
 
 use std::borrow::Cow;
 use std::pin::Pin;
+use std::future::Future;
 
 use reqwest::{header, Client, Method, Request, Url};
-use tokio::prelude::Future;
 
 use psn_api_rs::{models::PSNUser, EncodeUrl, PSNRequest, PSN};
 use serde::de::DeserializeOwned;
@@ -25,12 +25,8 @@ impl From<PSN> for MyPSN {
 }
 
 impl EncodeUrl for MyPSN {
-    fn uuid(&self) -> &str {
-        self.psn.uuid()
-    }
-
-    fn two_step(&self) -> &str {
-        self.psn.two_step()
+    fn npsso(&self) -> Option<&str> {
+        self.psn.npsso()
     }
 
     fn access_token(&self) -> Option<&str> {
@@ -141,15 +137,13 @@ impl PSNRequest for MyPSN {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let uuid = "uuid".into();
-    let two_step = "two_step".into();
+    let npsso = "npsso".into();
 
     let mut my_psn: MyPSN = PSN::new()
         .set_region("us".to_owned())
         .set_lang("en".to_owned())
         .set_self_online_id(String::from("Your Login account PSN online_id"))
-        .add_uuid(uuid)
-        .add_two_step(two_step)
+        .add_npsso(npsso)
         .into();
 
     my_psn = my_psn.auth().await.unwrap_or_else(|e| panic!("{:?}", e));
