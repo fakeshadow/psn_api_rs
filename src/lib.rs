@@ -6,37 +6,42 @@
 //! [How to obtain uuid and two_step tokens](https://tusticles.com/psn-php/first_login.html)
 //! The `access_token` last about an hour before expire and it's needed to call most other PSN APIs(The PSN store API doesn't need any token to access though).
 //! The `refresh_token` last much longer and it's used to generate a new access_token after/before it is expired.
-//! * Some thing to note:
-//! There is a rate limiter for the official PSN API so better not make lots of calls in short time.
 //!
-//! # Example:
+//! * Note:
+//! There is a rate limiter for the official PSN API so better not make lots of calls in short time.
+//! The proxy example (The best practice to use this libaray) shows how to make high concurrency possible and combat the rate limiter effectivly.
+//!
+//! # Basic Example:
 //!```no_run
-//!use psn_api_rs::{psn::PSN, traits::PSNRequest, models::PSNUser};
+//!use psn_api_rs::{psn::PSN, types::PSNInner, traits::PSNRequest, models::PSNUser};
 //!
 //!#[tokio::main]
 //!async fn main() -> std::io::Result<()> {
 //!    let refresh_token = String::from("your refresh token");
 //!    let npsso = String::from("your npsso");
 //!
-//!    // construct a PSN object,add credentials and call auth to generate tokens.
-//!    let mut psn: PSN = PSN::new()
-//!            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
+//!    let client = PSN::new_client().expect("Failed to build http client");
+//!
+//!    // construct a PSNInner object,add credentials and call auth to generate tokens.
+//!    let mut psn_inner = PSNInner::new();
+//!    psn_inner.set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
 //!            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
-//!            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
-//!                                                                    // safe to leave unset if you don't need to send any PSN message.
+//!            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread. safe to leave unset if you don't need to send any PSN message.
 //!            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore add_npsso and call .auth() directly.
-//!            .add_npsso(npsso) // <- npsso is used only when refresh_token is not working or not provided.
+//!            .add_npsso(npsso); // <- npsso is used only when refresh_token is not working or not provided.
+//!
+//!    psn_inner = psn_inner
 //!            .auth()
 //!            .await
 //!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
 //!    println!(
-//!        "Authentication Success! These are your token info from PSN network: \r\n{:#?} ",
-//!        psn
+//!        "Authentication Success! These are your info from PSN network: \r\n{:#?} ",
+//!        psn_inner
 //!    );
 //!
-//!    let user: PSNUser = psn
-//!            .get_profile("Hakoom")
+//!    let user: PSNUser = psn_inner
+//!            .get_profile(&client, "Hakoom")
 //!            .await
 //!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
@@ -64,18 +69,16 @@ mod private_model;
 pub mod psn {
     use crossbeam_queue::SegQueue;
     use derive_more::Display;
-    use reqwest::{header, Client, ClientBuilder, Error, Proxy};
+    use reqwest::{Client, ClientBuilder, Error, Proxy};
     use serde::de::DeserializeOwned;
     use tang_rs::{Builder, Manager, ManagerFuture, Pool, PoolRef};
 
-    use crate::metas::meta::OAUTH_TOKEN_ENTRY;
-    use crate::private_model::{PSNResponseError, Tokens};
-    use crate::traits::{EncodeUrl, PSNRequest};
-    use crate::types::{PSNFuture, PSNInner};
+    use crate::traits::PSNRequest;
+    use crate::types::PSNInner;
 
     #[derive(Debug)]
     pub struct PSN {
-        inner: PSNInner,
+        inner: Pool<PSNInnerManager>,
         client: Client,
         proxy_pool: Option<Pool<ProxyPoolManager>>,
     }
@@ -85,6 +88,8 @@ pub mod psn {
     pub enum PSNError {
         #[display(fmt = "No http client is available and/or new client can't be made.")]
         NoClient,
+        #[display(fmt = "No psn object is available")]
+        NoPSNInner,
         #[display(fmt = "Failed to login in to PSN")]
         AuthenticationFail,
         #[display(fmt = "Request is timeout")]
@@ -95,6 +100,43 @@ pub mod psn {
         FromPSN(String),
         #[display(fmt = "Error from Local: {}", _0)]
         FromStd(std::io::Error),
+    }
+
+    pub struct PSNInnerManager {
+        inner: SegQueue<PSNInner>,
+    }
+
+    impl PSNInnerManager {
+        fn new() -> Self {
+            PSNInnerManager {
+                inner: SegQueue::new(),
+            }
+        }
+
+        fn add_psn_inner(&self, psn: PSNInner) {
+            self.inner.push(psn);
+        }
+    }
+
+    impl Manager for PSNInnerManager {
+        type Connection = PSNInner;
+        type Error = PSNError;
+
+        fn connect(&self) -> ManagerFuture<'_, Result<Self::Connection, Self::Error>> {
+            Box::pin(async move { self.inner.pop().map_err(|_| PSNError::NoClient) })
+        }
+
+        fn is_valid<'a>(
+            &'a self,
+            _conn: &'a mut Self::Connection,
+        ) -> ManagerFuture<'a, Result<(), Self::Error>> {
+            // ToDo: check should_refresh here.
+            unimplemented!()
+        }
+
+        fn is_closed(&self, _conn: &mut Self::Connection) -> bool {
+            false
+        }
     }
 
     pub struct ProxyPoolManager {
@@ -167,94 +209,53 @@ pub mod psn {
         }
     }
 
-    impl Default for PSN {
-        fn default() -> Self {
+    impl PSN {
+        /// A shortcut for building a temporary http client
+        pub fn new_client() -> Result<Client, PSNError> {
+            ClientBuilder::new().build().map_err(|_| PSNError::NoClient)
+        }
+
+        /// Accept multiple PSNInner and use a connection pool to use them concurrently.
+        pub async fn new(psn_inner: Vec<PSNInner>) -> Self {
+            let mgr = PSNInnerManager::new();
+
+            let size = psn_inner.len() as u8;
+
+            for inner in psn_inner.into_iter() {
+                mgr.add_psn_inner(inner);
+            }
+
+            let inner_pool = Builder::new()
+                .always_check(false)
+                .idle_timeout(None)
+                .max_lifetime(None)
+                .min_idle(size)
+                .max_size(size)
+                .build(mgr)
+                .await
+                .expect("Failed to build proxy pool");
+
             PSN {
-                inner: Default::default(),
-                client: ClientBuilder::new()
-                    .build()
-                    .expect("Failed to build http client"),
+                inner: inner_pool,
+                client: Self::new_client().expect("Failed to build http client"),
                 proxy_pool: None,
             }
         }
-    }
 
-    impl PSN {
-        pub fn new() -> Self {
-            PSN::default()
-        }
-
-        pub fn add_refresh_token(mut self, refresh_token: String) -> Self {
-            self.inner.add_refresh_token(refresh_token);
-            self
-        }
-
-        pub fn get_refresh_token(&self) -> Option<&str> {
-            self.inner.get_refresh_token()
-        }
-
-        pub fn add_npsso(mut self, npsso: String) -> Self {
-            self.inner.add_npsso(npsso);
-            self
-        }
-
-        /// `region` is the psn server region setting. default is `hk`(Hang Kong). You can change to `us`(USA),`jp`(Japan), etc
-        pub fn set_region(mut self, region: String) -> Self {
-            self.inner.set_region(region);
-            self
-        }
-
-        /// default language is English.
-        pub fn set_lang(mut self, lang: String) -> Self {
-            self.inner.set_lang(lang);
-            self
-        }
-
-        /// This is your login in account's online id. default is "".
-        /// This field is used to generate new message thread.
-        pub fn set_self_online_id(mut self, id: String) -> Self {
-            self.inner.set_self_online_id(id);
-            self
-        }
-
-        pub fn set_access_token(&mut self, access_token: Option<String>) -> &mut Self {
-            self.inner.set_access_token(access_token);
-            self
-        }
-
-        pub fn set_refresh_token(&mut self, refresh_token: Option<String>) -> &mut Self {
-            self.inner.set_refresh_token(refresh_token);
-            self
-        }
-
-        /// set refresh time to now.
-        pub fn set_refresh(&mut self) {
-            self.inner.set_refresh();
-        }
-
-        /// check if it's about time the access_token expires.
-        pub fn should_refresh(&self) -> bool {
-            self.inner.should_refresh()
-        }
-
-        ///Add http proxy pool to combat PSN rate limiter.
+        /// Add http proxy pool to combat PSN rate limiter. This is not required.
         ///# Example:
         ///```no_run
-        ///use psn_api_rs::{psn::PSN, traits::PSNRequest};
+        ///use psn_api_rs::{psn::PSN, types::PSNInner, traits::PSNRequest};
         ///
         ///#[tokio::main]
         ///async fn main() -> std::io::Result<()> {
-        ///    let refresh_token = String::from("your refresh token");
+        ///    let psn_inner = PSNInner::new()
+        ///            .add_refresh_token("refresh_token".into())
+        ///            .add_npsso("npsso".into())
+        ///            .auth()
+        ///            .await
+        ///            .expect("Authentication failed");
         ///
-        ///    let mut psn: PSN = PSN::new()
-        ///            .set_region("us".to_owned())
-        ///            .set_lang("en".to_owned())
-        ///            .set_self_online_id(String::from("Your Login account PSN online_id"))
-        ///            .add_refresh_token(refresh_token);
-        ///
-        ///    // the max proxy pool size is determined by the first proxies vector's length passed to PSN object(upper limit pool size is u8).
-        ///    // You can pass more proxies on the fly to PSN but once you hit the max pool size
-        ///    // all additional proxies become backup and can only be activated when an active proxy is dropped(connection broken for example)
         ///    let proxies = vec![
         ///        // ("address", Some(username), Some(password)),
         ///        ("http://abc.com", None, None),
@@ -262,20 +263,15 @@ pub mod psn {
         ///        ("http://abc.com", Some("user"), Some("pass")),
         ///    ];
         ///
-        ///    psn.add_proxy(proxies).await;
-        ///    psn = psn.auth().await.unwrap_or_else(|e| panic!("{:?}", e));
+        ///    let psn = PSN::new(vec![psn_inner]).await.init_proxy(proxies);
         ///
         ///    Ok(())
         ///}
         ///```
-        pub async fn add_proxy(&mut self, proxies: Vec<(&str, Option<&str>, Option<&str>)>) {
-            if let Some(pool) = &self.proxy_pool {
-                for (address, username, password) in proxies.into_iter() {
-                    pool.get_manager().add_proxy(address, username, password);
-                }
-                return;
-            }
-
+        pub async fn init_proxy(
+            mut self,
+            proxies: Vec<(&str, Option<&str>, Option<&str>)>,
+        ) -> Self {
             let mgr = ProxyPoolManager::new();
             let size = proxies.len() as u8;
             for (address, username, password) in proxies.into_iter() {
@@ -293,18 +289,188 @@ pub mod psn {
                 .expect("Failed to build proxy pool");
 
             self.proxy_pool = Some(pool);
+            self
         }
 
-        pub async fn get_proxy_cli(
+        /// Add new proxy into `ProxyPoolManager` on the fly.
+        /// The max proxy pool size is determined by the first proxies vector's length passed to 'PSN::init_proxy'(upper limit pool size is u8).
+        /// Once you hit the max pool size all additional proxies become backup and can only be activated when an active proxy is dropped(connection broken for example)
+        pub fn add_proxy(&self, proxies: Vec<(&str, Option<&str>, Option<&str>)>) {
+            if let Some(pool) = &self.proxy_pool {
+                for (address, username, password) in proxies.into_iter() {
+                    pool.get_manager().add_proxy(address, username, password);
+                }
+            }
+        }
+
+        pub async fn get_profile<T: DeserializeOwned + 'static>(
             &self,
-        ) -> Result<Option<PoolRef<'_, ProxyPoolManager>>, PSNError> {
+            online_id: &str,
+        ) -> Result<T, PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner.get_profile(client, online_id).await
+        }
+
+        pub async fn get_titles<T: DeserializeOwned + 'static>(
+            &self,
+            online_id: &str,
+            offset: u32,
+        ) -> Result<T, PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner.get_titles(client, online_id, offset).await
+        }
+
+        pub async fn get_trophy_set<T: DeserializeOwned + 'static>(
+            &self,
+            online_id: &str,
+            np_communication_id: &str,
+        ) -> Result<T, PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner
+                .get_trophy_set(client, online_id, np_communication_id)
+                .await
+        }
+
+        pub async fn get_message_threads<T: DeserializeOwned + 'static>(
+            &self,
+            offset: u32,
+        ) -> Result<T, PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner.get_message_threads(client, offset).await
+        }
+
+        pub async fn get_message_thread<T: DeserializeOwned + 'static>(
+            &self,
+            thread_id: &str,
+        ) -> Result<T, PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner.get_message_thread(client, thread_id).await
+        }
+
+        pub async fn generate_message_thread(&self, online_id: &str) -> Result<(), PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner.generate_message_thread(client, online_id).await
+        }
+
+        pub async fn leave_message_thread(&self, thread_id: &str) -> Result<(), PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner.leave_message_thread(client, thread_id).await
+        }
+
+        pub async fn send_message(
+            &self,
+            online_id: &str,
+            msg: Option<&str>,
+            path: Option<&str>,
+            thread_id: &str,
+        ) -> Result<(), PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner
+                .send_message(client, online_id, msg, path, thread_id)
+                .await
+        }
+
+        pub async fn search_store_items<T: DeserializeOwned + 'static>(
+            &self,
+            lang: &str,
+            region: &str,
+            age: &str,
+            name: &str,
+        ) -> Result<T, PSNError> {
+            let inner_ref = self.inner.get().await?;
+            let proxy_ref = self.get_proxy_cli().await?;
+
+            let client = match proxy_ref.as_ref() {
+                Some(proxy_ref) => &**proxy_ref,
+                None => &self.client,
+            };
+
+            let psn_inner = &*inner_ref;
+
+            psn_inner
+                .search_store_items(client, lang, region, age, name)
+                .await
+        }
+
+        async fn get_proxy_cli(&self) -> Result<Option<PoolRef<'_, ProxyPoolManager>>, PSNError> {
             let fut = match self.proxy_pool.as_ref() {
                 Some(pool) => pool.get(),
                 None => return Ok(None),
             };
-            let conn = fut.await?;
-            println!("got connection");
-            Ok(Some(conn))
+            let pool_ref = fut.await?;
+            Ok(Some(pool_ref))
         }
 
         pub fn clients_state(&self) -> u8 {
@@ -312,211 +478,6 @@ pub mod psn {
                 .as_ref()
                 .map(|pool| pool.state().idle_connections)
                 .unwrap_or(0)
-        }
-    }
-
-    impl EncodeUrl for PSN {
-        fn npsso(&self) -> Option<&str> {
-            self.inner.npsso()
-        }
-
-        fn access_token(&self) -> Option<&str> {
-            self.inner.access_token()
-        }
-
-        fn refresh_token(&self) -> &str {
-            self.inner.refresh_token()
-        }
-
-        fn region(&self) -> &str {
-            self.inner.region()
-        }
-
-        fn self_online_id(&self) -> &str {
-            self.inner.self_online_id()
-        }
-
-        fn language(&self) -> &str {
-            self.inner.language()
-        }
-    }
-
-    impl PSNRequest for PSN {
-        type Error = PSNError;
-
-        fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
-            Box::pin(async move {
-                let npsso = self.inner.npsso().ok_or(PSNError::AuthenticationFail)?;
-
-                let string_body = serde_urlencoded::to_string(&PSNInner::oauth_token_encode())
-                    .expect("Failed to parse string body for first authentication");
-
-                let tokens = self
-                    .client
-                    .post(OAUTH_TOKEN_ENTRY)
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header("Cookie", format!("npsso={}", npsso))
-                    .body(string_body)
-                    .send()
-                    .await?
-                    .json::<Tokens>()
-                    .await?;
-
-                if tokens.access_token.is_none() || tokens.refresh_token.is_none() {
-                    return Err(PSNError::AuthenticationFail);
-                }
-
-                self.set_access_token(tokens.access_token)
-                    .set_refresh_token(tokens.refresh_token)
-                    .set_refresh();
-
-                Ok(())
-            })
-        }
-
-        fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>> {
-            Box::pin(async move {
-                let string_body = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
-                    .expect("Failed to parse string body for second time authentication");
-
-                let tokens = self
-                    .client
-                    .post(OAUTH_TOKEN_ENTRY)
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .body(string_body)
-                    .send()
-                    .await?
-                    .json::<Tokens>()
-                    .await?;
-
-                if tokens.access_token.is_none() {
-                    return Err(PSNError::AuthenticationFail);
-                }
-
-                self.set_access_token(tokens.access_token).set_refresh();
-
-                Ok(())
-            })
-        }
-
-        fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
-            &'s self,
-            url: &'u str,
-        ) -> PSNFuture<'s, Result<T, Self::Error>> {
-            Box::pin(
-                // The access_token is used as bearer token and content type header need to be application/json.
-                async move {
-                    let pool_ref = self.get_proxy_cli().await?;
-
-                    let client = match &pool_ref {
-                        Some(cli) => &**cli,
-                        None => &self.client,
-                    };
-
-                    let req = match self.access_token() {
-                        Some(token) => client
-                            .get(url)
-                            // The access_token is used as bearer token and content type header need to be application/json.
-                            .header(header::AUTHORIZATION, format!("Bearer {}", token))
-                            .header(header::CONTENT_TYPE, "application/json"),
-                        // there are api endpoints that don't need access_token to access so we only add bearer token when we have it.
-                        None => client
-                            .get(url)
-                            .header(header::CONTENT_TYPE, "application/json"),
-                    };
-
-                    let res = req.send().await?;
-
-                    if res.status() != 200 {
-                        // ToDo: conditional drop bad Client because proxy failure
-                        let e = res.json::<PSNResponseError>().await?;
-                        Err(PSNError::FromPSN(e.error.message))
-                    } else {
-                        let res = res.json().await?;
-                        Ok(res)
-                    }
-                },
-            )
-        }
-
-        fn del_by_url_encode<'s, 'u: 's>(
-            &'s self,
-            url: &'u str,
-        ) -> PSNFuture<'s, Result<(), Self::Error>> {
-            Box::pin(async move {
-                let pool_ref = self.get_proxy_cli().await?;
-
-                let client = match pool_ref.as_ref() {
-                    Some(cli) => &**cli,
-                    None => &self.client,
-                };
-
-                let res = client
-                    .delete(url)
-                    .header(
-                        header::AUTHORIZATION,
-                        format!(
-                            "Bearer {}",
-                            self.access_token().expect("access_token is None")
-                        ),
-                    )
-                    .send()
-                    .await?;
-
-                if res.status() != 204 {
-                    let e = res.json::<PSNResponseError>().await?;
-                    Err(PSNError::FromPSN(e.error.message))
-                } else {
-                    Ok(())
-                }
-            })
-        }
-
-        fn post_by_multipart<'se, 'st: 'se>(
-            &'se self,
-            boundary: &'st str,
-            url: &'st str,
-            body: Vec<u8>,
-        ) -> PSNFuture<'se, Result<(), Self::Error>> {
-            Box::pin(
-                // The access_token is used as bearer token and content type header need to be multipart/form-data.
-                async move {
-                    let pool_ref = self.get_proxy_cli().await?;
-
-                    let client = match pool_ref.as_ref() {
-                        Some(cli) => &**cli,
-                        None => &self.client,
-                    };
-
-                    let res = client
-                        .post(url)
-                        .header(
-                            header::CONTENT_TYPE,
-                            format!("multipart/form-data; boundary={}", boundary),
-                        )
-                        .header(
-                            header::AUTHORIZATION,
-                            format!(
-                                "Bearer {}",
-                                self.access_token().expect("access_token is None")
-                            ),
-                        )
-                        .body(body)
-                        .send()
-                        .await?;
-
-                    if res.status() != 200 {
-                        let e = res.json::<PSNResponseError>().await?;
-                        Err(PSNError::FromPSN(e.error.message))
-                    } else {
-                        Ok(())
-                    }
-                },
-            )
-        }
-
-        fn read_path(path: &str) -> PSNFuture<Result<Vec<u8>, Self::Error>> {
-            Box::pin(async move { tokio::fs::read(path).await.map_err(PSNError::FromStd) })
         }
     }
 }

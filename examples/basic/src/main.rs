@@ -6,29 +6,40 @@ use psn_api_rs::{
     },
     psn::PSN,
     traits::PSNRequest,
+    types::PSNInner,
 };
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // string collector
     let (refresh_token, npsso) = collect_input();
 
-    let psn =
-        // construct a new PSN object, add args and call auth to generate tokens which are need to call other PSN APIs.
-        PSN::new()
-            .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
-            .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
-            .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread.
-            // safe to leave unset if you don't need to send any PSN message.
-            .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore add_npsso and call auth directly.
-            .add_npsso(npsso) // <- npsso is used only when refresh_token is not working or not provided.
-            .auth()
-            .await
-            .unwrap_or_else(|e| panic!("{:?}", e));
+    // build a temporary reqwest http client for initial authentication
+    let client = PSN::new_client().expect("Failed to build http client");
+
+    // construct a new PSNInner object, add args and call auth to generate tokens which are need to call other PSN APIs.
+    let mut psn_inner = PSNInner::new();
+    psn_inner
+        .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
+        .set_lang("en".to_owned()) // <- set to a language you want the response to be. default is en
+        .set_self_online_id(String::from("Your Login account PSN online_id")) // <- this is used to generate new message thread. safe to leave unset if you don't need to send any PSN message.
+        .add_refresh_token(refresh_token) // <- If refresh_token is provided then it's safe to ignore add_npsso and call auth directly.
+        .add_npsso(npsso); // <- npsso is used only when refresh_token is not working or not provided.
+
+    psn_inner = psn_inner
+        .auth(client.clone())
+        .await
+        .unwrap_or_else(|e| panic!("{:?}", e));
+
+    let refresh_token = psn_inner.get_refresh_token().unwrap().to_owned();
 
     println!(
         "\r\nAuthentication Success! You PSN info are:\r\n{:#?}",
-        psn
+        psn_inner
     );
+
+    // multiple PSNInner can be pass to PSN object
+    let psn = PSN::new(vec![psn_inner]).await;
 
     // get psn user profile by online id
     let user: PSNUser = psn
@@ -76,7 +87,9 @@ async fn main() -> std::io::Result<()> {
     }
 
     // store apis don't need authentication.
-    let psn_no_auth = PSN::new();
+    let psn_inner = PSNInner::new();
+
+    let psn_no_auth = PSN::new(vec![psn_inner]).await;
     let search: StoreSearchResult = psn_no_auth
         .search_store_items("en", "us", "20", "ace combat")
         .await
@@ -85,8 +98,8 @@ async fn main() -> std::io::Result<()> {
     println!("Got examples PSN store response: {:#?}", search);
 
     println!("\r\n\r\nThe examples is finished and all api endpoints are good");
-    println!("\r\n\r\npsn struct is dropped at this point so it's better to store your access_token and refresh_token locally to make sure they can be reused");
-    println!("Your psn info is : {:#?}", psn);
+    println!("\r\n\r\npsn struct is dropped at this point so it's better to store your refresh_token locally to make sure they can be reused");
+    println!("Your refresh_token is : {:#?}", refresh_token);
 
     Ok(())
 }

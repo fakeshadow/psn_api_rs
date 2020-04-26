@@ -13,102 +13,121 @@ use crate::types::PSNFuture;
 /// The crate can provide the url, body format and some headers needed but the response handling you have to write your own.
 /// methods with multiple lifetimes always use args with shorter lifetime than self and the returned future.
 pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
+    type Client: Send + Sync + Clone;
     type Error;
 
-    fn auth(mut self) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
+    fn auth(
+        mut self,
+        client: Self::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
-            if self.gen_access_and_refresh().await.is_err() {
-                self.gen_access_from_refresh().await?;
+            if self.gen_access_and_refresh(client.clone()).await.is_err() {
+                self.gen_access_from_refresh(client).await?;
             }
             Ok(self)
         })
     }
 
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>>;
+    fn gen_access_and_refresh(
+        &mut self,
+        client: Self::Client,
+    ) -> PSNFuture<Result<(), Self::Error>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
-    fn gen_access_from_refresh(&mut self) -> PSNFuture<Result<(), Self::Error>>;
+    fn gen_access_from_refresh(
+        &mut self,
+        client: Self::Client,
+    ) -> PSNFuture<Result<(), Self::Error>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
-    fn get_by_url_encode<'s, 'u: 's, T: DeserializeOwned + 'static>(
-        &'s self,
-        url: &'u str,
-    ) -> PSNFuture<'s, Result<T, Self::Error>>;
+    fn get_by_url_encode<'se, 'st: 'se, T: DeserializeOwned + 'static>(
+        &'se self,
+        client: &'se Self::Client,
+        url: &'st str,
+    ) -> PSNFuture<'se, Result<T, Self::Error>>;
 
     /// A generic http del handle function. return status 204 as successful response.
-    fn del_by_url_encode<'s, 'u: 's>(
-        &'s self,
-        url: &'u str,
-    ) -> PSNFuture<'s, Result<(), Self::Error>>;
+    fn del_by_url_encode<'se, 'st: 'se>(
+        &'se self,
+        client: &'se Self::Client,
+        url: &'st str,
+    ) -> PSNFuture<'se, Result<(), Self::Error>>;
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
-    fn post_by_multipart<'s, 't: 's>(
-        &'s self,
-        boundary: &'t str,
-        url: &'t str,
+    fn post_by_multipart<'se, 'st: 'se>(
+        &'se self,
+        client: &'se Self::Client,
+        boundary: &'st str,
+        url: &'st str,
         body: Vec<u8>,
-    ) -> PSNFuture<'s, Result<(), Self::Error>>;
+    ) -> PSNFuture<'se, Result<(), Self::Error>>;
 
     fn get_profile<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
+        client: &'se Self::Client,
         online_id: &'st str,
     ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.profile_encode(online_id);
-            self.get_by_url_encode(url.as_str()).await
+            self.get_by_url_encode(client, url.as_str()).await
         })
     }
 
     /// need a legit `offset`(offset can't be larger than the total trophy lists a user have).
     fn get_titles<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
+        client: &'se Self::Client,
         online_id: &'st str,
         offset: u32,
     ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.trophy_summary_encode(online_id, offset);
-            self.get_by_url_encode(url.as_str()).await
+            self.get_by_url_encode(client, url.as_str()).await
         })
     }
 
     fn get_trophy_set<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
+        client: &'se Self::Client,
         online_id: &'st str,
         np_communication_id: &'st str,
     ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.trophy_set_encode(online_id, np_communication_id);
-            self.get_by_url_encode(url.as_str()).await
+            self.get_by_url_encode(client, url.as_str()).await
         })
     }
 
     /// return message threads of the account you used to login PSN network.
     /// `offset` can't be large than all existing threads count.
-    fn get_message_threads<T: DeserializeOwned + 'static>(
-        &self,
+    fn get_message_threads<'a, T: DeserializeOwned + 'static>(
+        &'a self,
+        client: &'a Self::Client,
         offset: u32,
     ) -> PSNFuture<Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.message_threads_encode(offset);
-            self.get_by_url_encode(url.as_str()).await
+            self.get_by_url_encode(client, url.as_str()).await
         })
     }
 
     /// return message thread detail of the `ThreadId`.
     fn get_message_thread<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
+        client: &'se Self::Client,
         thread_id: &'st str,
     ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = self.message_thread_encode(thread_id);
-            self.get_by_url_encode(url.as_str()).await
+            self.get_by_url_encode(client, url.as_str()).await
         })
     }
 
     fn generate_message_thread<'se, 'st: 'se>(
         &'se self,
+        client: &'se Self::Client,
         online_id: &'st str,
     ) -> PSNFuture<'se, Result<(), Self::Error>> {
         Box::pin(async move {
@@ -118,62 +137,65 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
                 .await?;
             let url = self.generate_thread_encode();
 
-            self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+            self.post_by_multipart(client, boundary.as_str(), url.as_str(), body)
                 .await
         })
     }
 
-    fn leave_message_thread<'s, 't: 's>(
-        &'s self,
-        thread_id: &'t str,
-    ) -> PSNFuture<'s, Result<(), Self::Error>> {
+    fn leave_message_thread<'se, 'st: 'se>(
+        &'se self,
+        client: &'se Self::Client,
+        thread_id: &'st str,
+    ) -> PSNFuture<'se, Result<(), Self::Error>> {
         Box::pin(async move {
             let url = self.leave_message_thread_encode(thread_id);
-            self.del_by_url_encode(url.as_str()).await
+            self.del_by_url_encode(client, url.as_str()).await
         })
     }
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message<'s, 't: 's>(
-        &'s self,
-        online_id: &'t str,
-        msg: Option<&'t str>,
-        path: Option<&'t str>,
-        thread_id: &'t str,
-    ) -> PSNFuture<'s, Result<(), Self::Error>> {
+    fn send_message<'se, 'st: 'se>(
+        &'se self,
+        client: &'se Self::Client,
+        online_id: &'st str,
+        msg: Option<&'st str>,
+        path: Option<&'st str>,
+        thread_id: &'st str,
+    ) -> PSNFuture<'se, Result<(), Self::Error>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
             let body = self.multipart_body(&boundary, online_id, msg, path).await?;
 
-            self.post_by_multipart(boundary.as_str(), url.as_str(), body)
+            self.post_by_multipart(client, boundary.as_str(), url.as_str(), body)
                 .await
         })
     }
 
-    fn search_store_items<'s, 't: 's, T: DeserializeOwned + 'static>(
-        &'s self,
-        lang: &'t str,
-        region: &'t str,
-        age: &'t str,
-        name: &'t str,
-    ) -> PSNFuture<'s, Result<T, Self::Error>> {
+    fn search_store_items<'se, 'st: 'se, T: DeserializeOwned + 'static>(
+        &'se self,
+        client: &'se Self::Client,
+        lang: &'st str,
+        region: &'st str,
+        age: &'st str,
+        name: &'st str,
+    ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let url = Self::store_search_encode(lang, region, age, name);
-            self.get_by_url_encode(url.as_str()).await
+            self.get_by_url_encode(client, url.as_str()).await
         })
     }
 
     /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
     /// pass both as `None` will result in generating a new message thread body.
-    fn multipart_body<'s, 'a: 's>(
-        &'s self,
-        boundary: &'a str,
-        online_id: &'a str,
-        msg: Option<&'a str>,
-        path: Option<&'a str>,
-    ) -> PSNFuture<'s, Result<Vec<u8>, Self::Error>> {
+    fn multipart_body<'se, 'st: 'se>(
+        &'se self,
+        boundary: &'st str,
+        online_id: &'st str,
+        msg: Option<&'st str>,
+        path: Option<&'st str>,
+    ) -> PSNFuture<'se, Result<Vec<u8>, Self::Error>> {
         Box::pin(async move {
             let mut result: Vec<u8> = Vec::new();
 
