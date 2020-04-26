@@ -15,7 +15,7 @@
 //!
 //!#[tokio::main]
 //!async fn main() -> std::io::Result<()> {
-//! let refresh_token = String::from("your refresh token");
+//!    let refresh_token = String::from("your refresh token");
 //!    let npsso = String::from("your npsso");
 //!
 //!    // construct a PSN object,add credentials and call auth to generate tokens.
@@ -36,8 +36,7 @@
 //!    );
 //!
 //!    let user: PSNUser = psn
-//!            .add_online_id("Hakoom".to_owned())
-//!            .get_profile()
+//!            .get_profile("Hakoom")
 //!            .await
 //!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
