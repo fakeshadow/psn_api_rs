@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 psn_api_rs = { path = "../../", default-features = false }
-reqwest = { version = "0.10.0-alpha.1", features = ["json"] }
+reqwest = { version = "0.10.4", features = ["json"] }
 serde = "1.0.101"
 tokio = "0.2.16"
-

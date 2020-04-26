@@ -17,21 +17,23 @@ path = "src/lib.rs"
 [workspace]
 members = [
   "examples/basic",
+  "examples/proxy",
   "examples/trait_only"
 ]
 
 [features]
-default = [ "hyper", "hyper-tls", "serde_urlencoded", "tokio" ]
+default = [ "crossbeam-queue", "reqwest", "serde_urlencoded", "tang-rs", "tokio" ]
 
 [dependencies]
+crossbeam-queue = { version = "0.2.1", optional = true }
 derive_more = "0.14.1"
-hyper = { version = "0.13.4", optional = true, default-features = false }
-hyper-tls = { version = "0.4.1", optional = true }
 rand = "0.7.1"
+reqwest = { version = "0.10.4", features = [ "json" ], optional = true }
 serde = "1.0.101"
 serde_derive = "1.0.101"
 serde_json = "1.0.40"
 serde_urlencoded = { version = "0.6.1", optional = true }
+tang-rs = { git = "https://github.com/fakeshadow/tang_rs.git", optional = true }
 tokio = { version = "0.2.16", optional = true, default-features = false, features = ["fs"] }
 
 [dev-dependencies]

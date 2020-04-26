@@ -1,22 +1,24 @@
 // this example does not work properly despite it builds.
-
-use std::borrow::Cow;
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 
 use reqwest::{header, Client, Method, Request, Url};
 
-use psn_api_rs::{models::PSNUser, EncodeUrl, PSNRequest, PSN};
+use psn_api_rs::{
+    models::PSNUser,
+    traits::{EncodeUrl, PSNRequest},
+    types::PSNInner,
+};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug)]
 struct MyPSN {
-    psn: PSN,
+    psn: PSNInner,
     client: Client,
 }
 
-impl From<PSN> for MyPSN {
-    fn from(psn: PSN) -> Self {
+impl From<PSNInner> for MyPSN {
+    fn from(psn: PSNInner) -> Self {
         MyPSN {
             psn,
             client: Client::new(),
@@ -41,20 +43,12 @@ impl EncodeUrl for MyPSN {
         self.psn.region()
     }
 
-    fn other_online_id(&self) -> &str {
-        self.psn.other_online_id()
-    }
-
     fn self_online_id(&self) -> &str {
         self.psn.self_online_id()
     }
 
     fn language(&self) -> &str {
         self.psn.language()
-    }
-
-    fn np_communication_id(&self) -> &str {
-        self.psn.np_communication_id()
     }
 }
 
@@ -123,15 +117,15 @@ impl PSNRequest for MyPSN {
         &'s self,
         boundary: &'t str,
         url: &'t str,
-        body: Cow<'static, [u8]>,
+        body: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>> {
         Box::pin(async move { Ok(()) })
     }
 
     fn read_path(
         path: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Cow<'static, [u8]>, Self::Error>> + Send>> {
-        Box::pin(async move { Ok(Cow::Owned(vec![])) })
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, Self::Error>> + Send>> {
+        Box::pin(async move { Ok(vec![]) })
     }
 }
 
@@ -139,12 +133,13 @@ impl PSNRequest for MyPSN {
 async fn main() -> std::io::Result<()> {
     let npsso = "npsso".into();
 
-    let mut my_psn: MyPSN = PSN::new()
-        .set_region("us".to_owned())
-        .set_lang("en".to_owned())
-        .set_self_online_id(String::from("Your Login account PSN online_id"))
-        .add_npsso(npsso)
-        .into();
+    let mut psn = PSNInner::new();
+    psn.set_region("us".to_owned());
+    psn.set_lang("en".to_owned());
+    psn.set_self_online_id(String::from("Your Login account PSN online_id"));
+    psn.add_npsso(npsso);
+
+    let mut my_psn: MyPSN = psn.into();
 
     my_psn = my_psn.auth().await.unwrap_or_else(|e| panic!("{:?}", e));
 
@@ -153,10 +148,9 @@ async fn main() -> std::io::Result<()> {
         my_psn
     );
 
-    my_psn.psn.add_online_id("Hakoom".to_owned());
 
     let user: PSNUser = my_psn
-        .get_profile()
+        .get_profile("Hakoom")
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 

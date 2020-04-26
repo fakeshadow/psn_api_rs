@@ -4,14 +4,15 @@ use psn_api_rs::{
     models::{
         MessageThread, MessageThreadsSummary, PSNUser, StoreSearchResult, TrophySet, TrophyTitles,
     },
-    PSNRequest, PSN,
+    psn::PSN,
+    traits::PSNRequest,
 };
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let (refresh_token, npsso) = collect_input();
 
-    let mut psn =
+    let psn =
         // construct a new PSN object, add args and call auth to generate tokens which are need to call other PSN APIs.
         PSN::new()
             .set_region("us".to_owned()) // <- set to a psn region server suit your case. you can leave it as default which is hk
@@ -31,8 +32,7 @@ async fn main() -> std::io::Result<()> {
 
     // get psn user profile by online id
     let user: PSNUser = psn
-        .add_online_id("Hakoom".to_owned())
-        .get_profile()
+        .get_profile("Hakoom")
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
@@ -40,8 +40,7 @@ async fn main() -> std::io::Result<()> {
 
     // get psn user trophy lists by online id
     let titles: TrophyTitles = psn
-        .add_online_id("Hakoom".to_owned())
-        .get_titles(0)
+        .get_titles("Hakoom", 0)
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
@@ -49,9 +48,7 @@ async fn main() -> std::io::Result<()> {
 
     //get one game trophy detailed list by online id and game np communication id
     let set: TrophySet = psn
-        .add_online_id("Hakoom".to_owned())
-        .add_np_communication_id("NPWR10788_00".to_owned())
-        .get_trophy_set()
+        .get_trophy_set("Hakoom", "NPWR10788_00")
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
@@ -107,15 +104,17 @@ fn collect_input() -> (String, String) {
     trim(&mut refresh_token);
 
     if refresh_token.is_empty() {
-        println!("Please input your npsso and press enter to continue.\r\n
+        println!(
+            "Please input your npsso and press enter to continue.\r\n
 You can check this link below to see how to get one\r\n
-https://tusticles.com/psn-php/first_login.html\r\n");
+https://tusticles.com/psn-php/first_login.html\r\n"
+        );
 
         stdin().read_line(&mut npsso).unwrap();
         trim(&mut npsso);
     }
 
-    if refresh_token.is_empty() && npsso.is_empty()  {
+    if refresh_token.is_empty() && npsso.is_empty() {
         panic!("must provide refresh_token or npsso to proceed");
     }
 
