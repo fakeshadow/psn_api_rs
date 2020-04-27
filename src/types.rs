@@ -10,7 +10,7 @@ use crate::private_model::{PSNResponseError, Tokens};
 use crate::psn::PSNError;
 use crate::traits::{EncodeUrl, PSNRequest};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PSNInner {
     region: String,
     self_online_id: String,
@@ -136,10 +136,10 @@ impl PSNRequest for PSNInner {
     type Client = reqwest::Client;
     type Error = PSNError;
 
-    fn gen_access_and_refresh(
-        &mut self,
-        client: Self::Client,
-    ) -> PSNFuture<Result<(), Self::Error>> {
+    fn gen_access_and_refresh<'se>(
+        &'se mut self,
+        client: &'se Self::Client,
+    ) -> PSNFuture<'se, Result<(), Self::Error>> {
         Box::pin(async move {
             let npsso = self.npsso().ok_or(PSNError::AuthenticationFail)?;
 
@@ -168,10 +168,10 @@ impl PSNRequest for PSNInner {
         })
     }
 
-    fn gen_access_from_refresh(
-        &mut self,
-        client: Self::Client,
-    ) -> PSNFuture<Result<(), Self::Error>> {
+    fn gen_access_from_refresh<'se>(
+        &'se mut self,
+        client: &'se Self::Client,
+    ) -> PSNFuture<'se, Result<(), Self::Error>> {
         Box::pin(async move {
             let string_body = serde_urlencoded::to_string(&self.oauth_token_refresh_encode())
                 .expect("Failed to parse string body for second time authentication");
@@ -298,4 +298,4 @@ impl PSNRequest for PSNInner {
 }
 
 /// type alias to stop clippy from complaining
-pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;
+pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output=T> + Send + 's>>;

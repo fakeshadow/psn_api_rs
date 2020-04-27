@@ -104,12 +104,14 @@ pub mod psn {
 
     pub struct PSNInnerManager {
         inner: SegQueue<PSNInner>,
+        client: Client,
     }
 
     impl PSNInnerManager {
         fn new() -> Self {
             PSNInnerManager {
                 inner: SegQueue::new(),
+                client: ClientBuilder::new().build().expect("Failed to build http client for PSNInnerManager"),
             }
         }
 
@@ -128,10 +130,15 @@ pub mod psn {
 
         fn is_valid<'a>(
             &'a self,
-            _conn: &'a mut Self::Connection,
+            conn: &'a mut Self::Connection,
         ) -> ManagerFuture<'a, Result<(), Self::Error>> {
-            // ToDo: check should_refresh here.
-            unimplemented!()
+            Box::pin(async move {
+                if conn.should_refresh() {
+                    conn.gen_access_from_refresh(&self.client).await
+                } else {
+                    Ok(())
+                }
+            })
         }
 
         fn is_closed(&self, _conn: &mut Self::Connection) -> bool {
@@ -215,7 +222,7 @@ pub mod psn {
             ClientBuilder::new().build().map_err(|_| PSNError::NoClient)
         }
 
-        /// Accept multiple PSNInner and use a connection pool to use them concurrently.
+        /// Accept multiple PSNInner and  use them concurrently with a pool.
         pub async fn new(psn_inner: Vec<PSNInner>) -> Self {
             let mgr = PSNInnerManager::new();
 
@@ -226,14 +233,14 @@ pub mod psn {
             }
 
             let inner_pool = Builder::new()
-                .always_check(false)
+                .always_check(true)
                 .idle_timeout(None)
                 .max_lifetime(None)
                 .min_idle(size)
                 .max_size(size)
                 .build(mgr)
                 .await
-                .expect("Failed to build proxy pool");
+                .expect("Failed to build PSNInner pool");
 
             PSN {
                 inner: inner_pool,
@@ -307,17 +314,9 @@ pub mod psn {
             &self,
             online_id: &str,
         ) -> Result<T, PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
+            let (client, psn_inner) = self.get().await?;
 
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
-            psn_inner.get_profile(client, online_id).await
+            psn_inner.get_profile(&client, online_id).await
         }
 
         pub async fn get_titles<T: DeserializeOwned + 'static>(
@@ -325,17 +324,9 @@ pub mod psn {
             online_id: &str,
             offset: u32,
         ) -> Result<T, PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
+            let (client, psn_inner) = self.get().await?;
 
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
-            psn_inner.get_titles(client, online_id, offset).await
+            psn_inner.get_titles(&client, online_id, offset).await
         }
 
         pub async fn get_trophy_set<T: DeserializeOwned + 'static>(
@@ -343,18 +334,9 @@ pub mod psn {
             online_id: &str,
             np_communication_id: &str,
         ) -> Result<T, PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
-
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
+            let (client, psn_inner) = self.get().await?;
             psn_inner
-                .get_trophy_set(client, online_id, np_communication_id)
+                .get_trophy_set(&client, online_id, np_communication_id)
                 .await
         }
 
@@ -362,62 +344,30 @@ pub mod psn {
             &self,
             offset: u32,
         ) -> Result<T, PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
+            let (client, psn_inner) = self.get().await?;
 
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
-            psn_inner.get_message_threads(client, offset).await
+            psn_inner.get_message_threads(&client, offset).await
         }
 
         pub async fn get_message_thread<T: DeserializeOwned + 'static>(
             &self,
             thread_id: &str,
         ) -> Result<T, PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
+            let (client, psn_inner) = self.get().await?;
 
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
-            psn_inner.get_message_thread(client, thread_id).await
+            psn_inner.get_message_thread(&client, thread_id).await
         }
 
         pub async fn generate_message_thread(&self, online_id: &str) -> Result<(), PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
+            let (client, psn_inner) = self.get().await?;
 
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
-            psn_inner.generate_message_thread(client, online_id).await
+            psn_inner.generate_message_thread(&client, online_id).await
         }
 
         pub async fn leave_message_thread(&self, thread_id: &str) -> Result<(), PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
+            let (client, psn_inner) = self.get().await?;
 
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
-
-            psn_inner.leave_message_thread(client, thread_id).await
+            psn_inner.leave_message_thread(&client, thread_id).await
         }
 
         pub async fn send_message(
@@ -427,18 +377,10 @@ pub mod psn {
             path: Option<&str>,
             thread_id: &str,
         ) -> Result<(), PSNError> {
-            let inner_ref = self.inner.get().await?;
-            let proxy_ref = self.get_proxy_cli().await?;
-
-            let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
-            };
-
-            let psn_inner = &*inner_ref;
+            let (client, psn_inner) = self.get().await?;
 
             psn_inner
-                .send_message(client, online_id, msg, path, thread_id)
+                .send_message(&client, online_id, msg, path, thread_id)
                 .await
         }
 
@@ -449,6 +391,14 @@ pub mod psn {
             age: &str,
             name: &str,
         ) -> Result<T, PSNError> {
+            let (client, psn_inner) = self.get().await?;
+
+            psn_inner
+                .search_store_items(&client, lang, region, age, name)
+                .await
+        }
+
+        async fn get(&self) -> Result<(Client, PSNInner), PSNError> {
             let inner_ref = self.inner.get().await?;
             let proxy_ref = self.get_proxy_cli().await?;
 
@@ -459,9 +409,7 @@ pub mod psn {
 
             let psn_inner = &*inner_ref;
 
-            psn_inner
-                .search_store_items(client, lang, region, age, name)
-                .await
+            Ok((client.clone(), psn_inner.clone()))
         }
 
         async fn get_proxy_cli(&self) -> Result<Option<PoolRef<'_, ProxyPoolManager>>, PSNError> {

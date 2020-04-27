@@ -21,24 +21,24 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
         client: Self::Client,
     ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + Send>> {
         Box::pin(async move {
-            if self.gen_access_and_refresh(client.clone()).await.is_err() {
-                self.gen_access_from_refresh(client).await?;
+            if self.gen_access_and_refresh(&client).await.is_err() {
+                self.gen_access_from_refresh(&client).await?;
             }
             Ok(self)
         })
     }
 
     /// This method will use `uuid` and `two_step` to get a new pair of access_token and refresh_token from PSN.
-    fn gen_access_and_refresh(
-        &mut self,
-        client: Self::Client,
-    ) -> PSNFuture<Result<(), Self::Error>>;
+    fn gen_access_and_refresh<'se>(
+        &'se mut self,
+        client: &'se Self::Client,
+    ) -> PSNFuture<'se, Result<(), Self::Error>>;
 
     /// This method will use local `refresh_token` to get a new `access_token` from PSN.
-    fn gen_access_from_refresh(
-        &mut self,
-        client: Self::Client,
-    ) -> PSNFuture<Result<(), Self::Error>>;
+    fn gen_access_from_refresh<'se>(
+        &'se mut self,
+        client: &'se Self::Client,
+    ) -> PSNFuture<'se, Result<(), Self::Error>>;
 
     /// A generic http get handle function. The return type `T` need to impl `serde::deserialize`.
     fn get_by_url_encode<'se, 'st: 'se, T: DeserializeOwned + 'static>(

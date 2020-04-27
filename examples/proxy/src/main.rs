@@ -21,8 +21,10 @@ async fn main() -> std::io::Result<()> {
 
     // temporary http client for authentication.
     let client = PSN::new_client().expect("Failed to build http client");
+
     let mut inners = Vec::new();
 
+    // build PSNInner with refresh_tokens
     for refresh_token in refresh_tokens.into_iter() {
         let mut inner = PSNInner::new();
 
@@ -60,9 +62,11 @@ async fn main() -> std::io::Result<()> {
 
     psn = psn.init_proxy(proxies).await;
 
+    // wrap psn in Arc so we can share it between threads.
     let psn = Arc::new(psn);
+    
     let result = Arc::new(Mutex::new(Vec::new()));
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(100);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<i32>(1000);
 
     // spawn 100 request to PSN at the same time.
     for i in 0..100 {
@@ -85,7 +89,7 @@ async fn main() -> std::io::Result<()> {
         println!("job {} is done", index);
     }
 
-    // You will get all the result if you have enough PSNInners passed to PSN::new().
+    // You will keep getting all the result without triggering rate limit if you have enough PSNInners passed to PSN::new().
     println!("total result count {:?}", result.lock().unwrap().len());
 
     Ok(())
