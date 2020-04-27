@@ -298,4 +298,4 @@ impl PSNRequest for PSNInner {
 }
 
 /// type alias to stop clippy from complaining
-pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output=T> + Send + 's>>;
+pub type PSNFuture<'s, T> = Pin<Box<dyn Future<Output = T> + Send + 's>>;

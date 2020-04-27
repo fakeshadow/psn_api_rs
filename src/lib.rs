@@ -40,8 +40,8 @@
 //!        psn_inner
 //!    );
 //!
-//!    let user: PSNUser = psn_inner
-//!            .get_profile(&client, "Hakoom")
+//!    let user = psn_inner
+//!            .get_profile::<PSNUser>(&client, "Hakoom")
 //!            .await
 //!            .unwrap_or_else(|e| panic!("{:?}", e));
 //!
@@ -76,7 +76,7 @@ pub mod psn {
     use crate::traits::PSNRequest;
     use crate::types::PSNInner;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct PSN {
         inner: Pool<PSNInnerManager>,
         client: Client,
@@ -111,7 +111,9 @@ pub mod psn {
         fn new() -> Self {
             PSNInnerManager {
                 inner: SegQueue::new(),
-                client: ClientBuilder::new().build().expect("Failed to build http client for PSNInnerManager"),
+                client: ClientBuilder::new()
+                    .build()
+                    .expect("Failed to build http client for PSNInnerManager"),
             }
         }
 
@@ -256,9 +258,12 @@ pub mod psn {
         ///
         ///#[tokio::main]
         ///async fn main() -> std::io::Result<()> {
-        ///    let psn_inner = PSNInner::new()
-        ///            .add_refresh_token("refresh_token".into())
-        ///            .add_npsso("npsso".into())
+        ///    let mut psn_inner = PSNInner::new();
+        ///
+        ///    psn_inner.add_refresh_token("refresh_token".into())
+        ///             .add_npsso("npsso".into());
+        ///
+        ///    psn_inner = psn_inner
         ///            .auth()
         ///            .await
         ///            .expect("Authentication failed");
@@ -270,7 +275,7 @@ pub mod psn {
         ///        ("http://abc.com", Some("user"), Some("pass")),
         ///    ];
         ///
-        ///    let psn = PSN::new(vec![psn_inner]).await.init_proxy(proxies);
+        ///    let psn = PSN::new(vec![psn_inner]).await.init_proxy(proxies).await;
         ///
         ///    Ok(())
         ///}
@@ -335,6 +340,7 @@ pub mod psn {
             np_communication_id: &str,
         ) -> Result<T, PSNError> {
             let (client, psn_inner) = self.get().await?;
+
             psn_inner
                 .get_trophy_set(&client, online_id, np_communication_id)
                 .await
@@ -398,18 +404,18 @@ pub mod psn {
                 .await
         }
 
-        async fn get(&self) -> Result<(Client, PSNInner), PSNError> {
-            let inner_ref = self.inner.get().await?;
+        async fn get(&self) -> Result<(Client, PoolRef<'_, PSNInnerManager>), PSNError> {
             let proxy_ref = self.get_proxy_cli().await?;
+            let inner_ref = self.inner.get().await?;
 
             let client = match proxy_ref.as_ref() {
-                Some(proxy_ref) => &**proxy_ref,
-                None => &self.client,
+                Some(proxy_ref) => (&**proxy_ref).clone(),
+                None => (&self.client).clone(),
             };
 
-            let psn_inner = &*inner_ref;
+            drop(proxy_ref);
 
-            Ok((client.clone(), psn_inner.clone()))
+            Ok((client, inner_ref))
         }
 
         async fn get_proxy_cli(&self) -> Result<Option<PoolRef<'_, ProxyPoolManager>>, PSNError> {

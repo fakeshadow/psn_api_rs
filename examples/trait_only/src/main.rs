@@ -13,14 +13,14 @@ use serde::de::DeserializeOwned;
 
 #[derive(Debug)]
 struct MyPSN {
-    psn: PSNInner,
+    inner: PSNInner,
     client: Client,
 }
 
 impl From<PSNInner> for MyPSN {
     fn from(psn: PSNInner) -> Self {
         MyPSN {
-            psn,
+            inner: psn,
             client: Client::new(),
         }
     }
@@ -28,27 +28,27 @@ impl From<PSNInner> for MyPSN {
 
 impl EncodeUrl for MyPSN {
     fn npsso(&self) -> Option<&str> {
-        self.psn.npsso()
+        self.inner.npsso()
     }
 
     fn access_token(&self) -> Option<&str> {
-        self.psn.access_token()
+        self.inner.access_token()
     }
 
     fn refresh_token(&self) -> &str {
-        self.psn.refresh_token()
+        self.inner.refresh_token()
     }
 
     fn region(&self) -> &str {
-        self.psn.region()
+        self.inner.region()
     }
 
     fn self_online_id(&self) -> &str {
-        self.psn.self_online_id()
+        self.inner.self_online_id()
     }
 
     fn language(&self) -> &str {
-        self.psn.language()
+        self.inner.language()
     }
 }
 
@@ -152,8 +152,8 @@ async fn main() -> std::io::Result<()> {
         my_psn
     );
 
-    let user: PSNUser = my_psn
-        .get_profile(&(), "Hakoom")
+    let user = my_psn
+        .get_profile::<PSNUser>(&(), "Hakoom")
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 

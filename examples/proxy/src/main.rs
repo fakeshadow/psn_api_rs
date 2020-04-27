@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use psn_api_rs::types::PSNInner;
-use psn_api_rs::{models::TrophySet, psn::PSN, traits::PSNRequest};
+use psn_api_rs::{models::TrophySet, psn::PSN, traits::PSNRequest, types::PSNInner};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -62,9 +61,6 @@ async fn main() -> std::io::Result<()> {
 
     psn = psn.init_proxy(proxies).await;
 
-    // wrap psn in Arc so we can share it between threads.
-    let psn = Arc::new(psn);
-    
     let result = Arc::new(Mutex::new(Vec::new()));
     let (tx, mut rx) = tokio::sync::mpsc::channel::<i32>(1000);
 
