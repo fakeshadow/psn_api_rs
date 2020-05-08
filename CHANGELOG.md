@@ -1,4 +1,4 @@
-(April 26, 2020)
+(May 8, 2020)
 ----------------------
 ### Break
 - `refresh_token` would be updated when `PSNRequest::gen_access_and_refresh`, `PSNRequest::gen_access_from_refresh` are called and render the old `refresh_token` invalid. 
