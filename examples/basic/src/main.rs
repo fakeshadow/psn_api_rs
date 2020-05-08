@@ -31,8 +31,6 @@ async fn main() -> std::io::Result<()> {
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 
-    let refresh_token = psn_inner.get_refresh_token().unwrap().to_owned();
-
     println!(
         "\r\nAuthentication Success! You PSN info are:\r\n{:#?}",
         psn_inner
@@ -86,6 +84,12 @@ async fn main() -> std::io::Result<()> {
         None => println!("\r\nIt seems this account doesn't have any threads so thread detail examples is skipped")
     }
 
+    // retrieve our new refresh_token from PSN
+    let inners = psn.get_inner();
+    let psn_inner = inners.get().await.unwrap();
+    let refresh_token = psn_inner.get_refresh_token().map(String::from);
+    drop(psn_inner);
+
     // store apis don't need authentication.
     let psn_inner = PSNInner::new();
 
@@ -99,7 +103,7 @@ async fn main() -> std::io::Result<()> {
 
     println!("\r\n\r\nThe examples is finished and all api endpoints are good");
     println!("\r\n\r\npsn struct is dropped at this point so it's better to store your refresh_token locally to make sure they can be reused");
-    println!("Your refresh_token is : {:#?}", refresh_token);
+    println!("Your (possible) new refresh_token is : {:#?}. You can use this refresh_token next time you try this example", refresh_token);
 
     Ok(())
 }

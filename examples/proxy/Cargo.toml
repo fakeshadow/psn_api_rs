@@ -6,4 +6,4 @@ edition = "2018"
 
 [dependencies]
 psn_api_rs = { path = "../../" }
-tokio = { version = "0.2.16", features = ["full"]}
+tokio = { version = "0.2.16", features = ["macros"] }

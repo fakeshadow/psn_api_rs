@@ -67,7 +67,9 @@ mod private_model;
 
 #[cfg(feature = "default")]
 pub mod psn {
-    use crossbeam_queue::SegQueue;
+    use std::future::Future;
+    use std::sync::{Mutex, MutexGuard};
+
     use derive_more::Display;
     use reqwest::{Client, ClientBuilder, Error, Proxy};
     use serde::de::DeserializeOwned;
@@ -88,46 +90,56 @@ pub mod psn {
     pub enum PSNError {
         #[display(fmt = "No http client is available and/or new client can't be made.")]
         NoClient,
-        #[display(fmt = "No psn object is available")]
+        #[display(fmt = "No PSNInner object is available")]
         NoPSNInner,
-        #[display(fmt = "Failed to login in to PSN")]
-        AuthenticationFail,
-        #[display(fmt = "Request is timeout")]
+        #[display(fmt = "Failed to login in to PSN on npsso code: {}", _0)]
+        InvalidNpsso(String),
+        #[display(fmt = "Failed to login in to PSN on refresh token: {}", _0)]
+        InvalidRefresh(String),
+        #[display(fmt = "Request to PSN pool is timeout.")]
         TimeOut,
-        #[display(fmt = "Error from Reqwest: {}", _0)]
+        #[display(fmt = "Error from Reqwest http client: {}", _0)]
         FromReqwest(Error),
         #[display(fmt = "Error from PSN response: {}", _0)]
         FromPSN(String),
-        #[display(fmt = "Error from Local: {}", _0)]
+        #[display(fmt = "Error from IO: {}", _0)]
         FromStd(std::io::Error),
     }
 
     pub struct PSNInnerManager {
-        inner: SegQueue<PSNInner>,
+        inner: Mutex<Vec<PSNInner>>,
         client: Client,
     }
 
     impl PSNInnerManager {
         fn new() -> Self {
             PSNInnerManager {
-                inner: SegQueue::new(),
+                inner: Mutex::new(Vec::new()),
                 client: ClientBuilder::new()
                     .build()
                     .expect("Failed to build http client for PSNInnerManager"),
             }
         }
 
-        fn add_psn_inner(&self, psn: PSNInner) {
-            self.inner.push(psn);
+        fn get_psn_inner(&self) -> MutexGuard<'_, Vec<PSNInner>> {
+            self.inner.lock().unwrap()
+        }
+
+        fn add_psn_inner(&self, psn_inner: Vec<PSNInner>) {
+            let mut inner = self.get_psn_inner();
+            for psn in psn_inner.into_iter() {
+                inner.push(psn);
+            }
         }
     }
 
     impl Manager for PSNInnerManager {
         type Connection = PSNInner;
         type Error = PSNError;
+        type TimeoutError = PSNError;
 
         fn connect(&self) -> ManagerFuture<'_, Result<Self::Connection, Self::Error>> {
-            Box::pin(async move { self.inner.pop().map_err(|_| PSNError::NoClient) })
+            Box::pin(async move { self.get_psn_inner().pop().ok_or(PSNError::NoClient) })
         }
 
         fn is_valid<'a>(
@@ -146,38 +158,55 @@ pub mod psn {
         fn is_closed(&self, _conn: &mut Self::Connection) -> bool {
             false
         }
+
+        fn spawn<Fut>(&self, fut: Fut)
+        where
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            tokio::spawn(fut);
+        }
     }
 
+    type Proxies = Mutex<Vec<(String, Option<String>, Option<String>)>>;
     pub struct ProxyPoolManager {
-        proxies: SegQueue<(String, Option<String>, Option<String>)>,
+        proxies: Proxies,
         marker: &'static str,
     }
 
     impl ProxyPoolManager {
         fn new() -> Self {
             ProxyPoolManager {
-                proxies: SegQueue::new(),
-                marker: "www.google.com",
+                proxies: Mutex::new(Vec::new()),
+                marker: "https://www.google.com",
             }
         }
 
-        fn add_proxy(&self, address: &str, username: Option<&str>, password: Option<&str>) {
-            self.proxies.push((
-                address.into(),
-                username.map(Into::into),
-                password.map(Into::into),
-            ));
+        fn add_proxy(&self, proxies: Vec<(&str, Option<&str>, Option<&str>)>) {
+            let mut inner = self.proxies.lock().unwrap();
+
+            for (address, username, password) in proxies.into_iter() {
+                inner.push((
+                    address.into(),
+                    username.map(Into::into),
+                    password.map(Into::into),
+                ))
+            }
         }
     }
 
     impl Manager for ProxyPoolManager {
         type Connection = Client;
         type Error = PSNError;
+        type TimeoutError = PSNError;
 
         fn connect(&self) -> ManagerFuture<'_, Result<Self::Connection, Self::Error>> {
             Box::pin(async move {
-                let (address, username, password) =
-                    self.proxies.pop().map_err(|_| PSNError::NoClient)?;
+                let (address, username, password) = self
+                    .proxies
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .ok_or(PSNError::NoClient)?;
                 let proxy = match username {
                     Some(username) => Proxy::all(&address)
                         .map(|p| p.basic_auth(&username, password.as_deref().unwrap_or(""))),
@@ -204,17 +233,18 @@ pub mod psn {
         fn is_closed(&self, _conn: &mut Self::Connection) -> bool {
             false
         }
+
+        fn spawn<Fut>(&self, fut: Fut)
+        where
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            tokio::spawn(fut);
+        }
     }
 
     impl From<Error> for PSNError {
         fn from(e: Error) -> Self {
             PSNError::FromReqwest(e)
-        }
-    }
-
-    impl From<tokio::time::Elapsed> for PSNError {
-        fn from(_: tokio::time::Elapsed) -> Self {
-            PSNError::TimeOut
         }
     }
 
@@ -230,9 +260,7 @@ pub mod psn {
 
             let size = psn_inner.len() as u8;
 
-            for inner in psn_inner.into_iter() {
-                mgr.add_psn_inner(inner);
-            }
+            mgr.add_psn_inner(psn_inner);
 
             let inner_pool = Builder::new()
                 .always_check(true)
@@ -286,9 +314,7 @@ pub mod psn {
         ) -> Self {
             let mgr = ProxyPoolManager::new();
             let size = proxies.len() as u8;
-            for (address, username, password) in proxies.into_iter() {
-                mgr.add_proxy(address, username, password);
-            }
+            mgr.add_proxy(proxies);
 
             let pool = Builder::new()
                 .always_check(false)
@@ -309,9 +335,7 @@ pub mod psn {
         /// Once you hit the max pool size all additional proxies become backup and can only be activated when an active proxy is dropped(connection broken for example)
         pub fn add_proxy(&self, proxies: Vec<(&str, Option<&str>, Option<&str>)>) {
             if let Some(pool) = &self.proxy_pool {
-                for (address, username, password) in proxies.into_iter() {
-                    pool.get_manager().add_proxy(address, username, password);
-                }
+                pool.get_manager().add_proxy(proxies);
             }
         }
 
@@ -404,6 +428,10 @@ pub mod psn {
                 .await
         }
 
+        pub fn get_inner(&self) -> Pool<PSNInnerManager> {
+            self.inner.clone()
+        }
+
         async fn get(&self) -> Result<(Client, PoolRef<'_, PSNInnerManager>), PSNError> {
             let proxy_ref = self.get_proxy_cli().await?;
             let inner_ref = self.inner.get().await?;
@@ -425,13 +453,6 @@ pub mod psn {
             };
             let pool_ref = fut.await?;
             Ok(Some(pool_ref))
-        }
-
-        pub fn clients_state(&self) -> u8 {
-            self.proxy_pool
-                .as_ref()
-                .map(|pool| pool.state().idle_connections)
-                .unwrap_or(0)
         }
     }
 }

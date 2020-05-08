@@ -141,7 +141,9 @@ impl PSNRequest for PSNInner {
         client: &'se Self::Client,
     ) -> PSNFuture<'se, Result<(), Self::Error>> {
         Box::pin(async move {
-            let npsso = self.npsso().ok_or(PSNError::AuthenticationFail)?;
+            let npsso = self
+                .npsso()
+                .ok_or_else(|| PSNError::InvalidNpsso("No npsso found".into()))?;
 
             let string_body = serde_urlencoded::to_string(&Self::oauth_token_encode())
                 .expect("Failed to parse string body for first authentication");
@@ -157,7 +159,7 @@ impl PSNRequest for PSNInner {
                 .await?;
 
             if tokens.access_token.is_none() || tokens.refresh_token.is_none() {
-                return Err(PSNError::AuthenticationFail);
+                return Err(PSNError::InvalidNpsso(npsso.into()));
             }
 
             self.set_access_token(tokens.access_token)
@@ -186,10 +188,12 @@ impl PSNRequest for PSNInner {
                 .await?;
 
             if tokens.access_token.is_none() {
-                return Err(PSNError::AuthenticationFail);
+                return Err(PSNError::InvalidRefresh(self.refresh_token().into()));
             }
 
-            self.set_access_token(tokens.access_token).set_refresh();
+            self.set_access_token(tokens.access_token)
+                .set_refresh_token(tokens.refresh_token)
+                .set_refresh();
 
             Ok(())
         })

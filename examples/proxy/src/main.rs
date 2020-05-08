@@ -5,17 +5,19 @@ use psn_api_rs::{models::TrophySet, psn::PSN, traits::PSNRequest, types::PSNInne
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // The more tokens the higher concurrency will we be able to achieve.
+    // Please note that your refresh_tokens listed here would become invalid after running the example.
+    // We force generate new refresh_tokens whenever we do PSN authentication and update access_tokens.
     let refresh_tokens = vec![
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
-        "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
+        // "your_refresh_token",
     ];
 
     // temporary http client for authentication.
@@ -38,6 +40,7 @@ async fn main() -> std::io::Result<()> {
             .auth(client.clone())
             .await
             .unwrap_or_else(|e| panic!("{:?}", e));
+
         inners.push(inner);
     }
 
@@ -87,6 +90,20 @@ async fn main() -> std::io::Result<()> {
 
     // You will keep getting all the result without triggering rate limit if you have enough PSNInners passed to PSN::new().
     println!("total result count {:?}", result.lock().unwrap().len());
+
+    // here we just extract all the latest refresh tokens that are in pool.
+    // (There could be PSNInners not returned to pool from other async tasks
+    // so in real life usage you would want to check if idle_connections === connections) and sleep wait accordingly
+    let inners = psn.get_inner();
+    let mut tokens = Vec::new();
+    let state = inners.state();
+    for _i in 0..state.idle_connections {
+        if let Some(inner) = inners.get().await.ok() {
+            let refresh_token = inner.get_refresh_token().map(String::from);
+            tokens.push(refresh_token);
+        }
+    }
+    println!("Your new refresh_tokens are: {:#?}", tokens);
 
     Ok(())
 }
