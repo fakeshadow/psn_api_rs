@@ -92,8 +92,8 @@ async fn main() -> std::io::Result<()> {
     println!("total result count {:?}", result.lock().unwrap().len());
 
     // here we just extract all the latest refresh tokens that are in pool.
-    // (There could be PSNInners not returned to pool from other async tasks
-    // so in real life usage you would want to check if idle_connections === connections) and sleep wait accordingly
+    // There could be PSNInners not returned to pool from other async tasks
+    // so in real life usage you would want to check if idle_connections == connections and sleep wait accordingly
     let inners = psn.get_inner();
     let mut tokens = Vec::new();
     let state = inners.state();

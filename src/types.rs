@@ -12,6 +12,7 @@ use crate::traits::{EncodeUrl, PSNRequest};
 
 #[derive(Debug, Clone)]
 pub struct PSNInner {
+    email: String,
     region: String,
     self_online_id: String,
     access_token: Option<String>,
@@ -24,6 +25,7 @@ pub struct PSNInner {
 impl Default for PSNInner {
     fn default() -> PSNInner {
         PSNInner {
+            email: "".to_owned(),
             region: "hk".to_owned(),
             self_online_id: "".to_owned(),
             access_token: None,
@@ -56,6 +58,16 @@ impl PSNInner {
             self.npsso = Some(npsso);
         }
         self
+    }
+
+    /// `email` is the psn account email address. Used to identify different tokens for the same account.
+    pub fn set_email(&mut self, email: String) -> &mut Self {
+        self.email = email;
+        self
+    }
+
+    pub fn get_email(&self) -> &str {
+        &self.email
     }
 
     /// `region` is the psn server region setting. default is `hk`(Hang Kong). You can change to `us`(USA),`jp`(Japan), etc
@@ -259,13 +271,13 @@ impl PSNRequest for PSNInner {
         })
     }
 
-    fn post_by_multipart<'se, 'st: 'se>(
+    fn post_by_multipart<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
         client: &'se Self::Client,
         boundary: &'st str,
         url: &'st str,
         body: Vec<u8>,
-    ) -> PSNFuture<'se, Result<(), Self::Error>> {
+    ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(
             // The access_token is used as bearer token and content type header need to be multipart/form-data.
             async move {
@@ -290,7 +302,8 @@ impl PSNRequest for PSNInner {
                     let e = res.json::<PSNResponseError>().await?;
                     Err(PSNError::FromPSN(e.error.message))
                 } else {
-                    Ok(())
+                    let res = res.json().await?;
+                    Ok(res)
                 }
             },
         )

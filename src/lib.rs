@@ -126,9 +126,15 @@ pub mod psn {
         }
 
         fn add_psn_inner(&self, psn_inner: Vec<PSNInner>) {
-            let mut inner = self.get_psn_inner();
+            let mut inners = self.get_psn_inner();
             for psn in psn_inner.into_iter() {
-                inner.push(psn);
+                for (index, inner) in inners.iter().enumerate() {
+                    if psn.get_email() == inner.get_email() {
+                        inners.remove(index);
+                        break;
+                    }
+                }
+                inners.push(psn);
             }
         }
     }
@@ -258,7 +264,7 @@ pub mod psn {
         pub async fn new(psn_inner: Vec<PSNInner>) -> Self {
             let mgr = PSNInnerManager::new();
 
-            let size = psn_inner.len() as u8;
+            let size = psn_inner.len();
 
             mgr.add_psn_inner(psn_inner);
 
@@ -266,7 +272,7 @@ pub mod psn {
                 .always_check(true)
                 .idle_timeout(None)
                 .max_lifetime(None)
-                .min_idle(size)
+                .min_idle(0)
                 .max_size(size)
                 .build(mgr)
                 .await
@@ -277,6 +283,29 @@ pub mod psn {
                 client: Self::new_client().expect("Failed to build http client"),
                 proxy_pool: None,
             }
+        }
+
+        /// Add new PSNInner to Manager. This inner will be used as backup and only when an active PSNInner is dropped from pool will it be used.
+        ///
+        /// It's a good idea to clear all the backup PSNInners and replace them with new ones in schedule.
+        pub fn add_psn_inner(&self, inners: Vec<PSNInner>) {
+            self.inner.get_manager().add_psn_inner(inners);
+        }
+
+        pub fn set_psn_inner_max(&self, max_size: usize) {
+            self.inner.set_max_size(max_size);
+        }
+
+        pub fn pause_inner(&self) {
+            self.inner.pause();
+        }
+
+        pub fn resume_inner(&self) {
+            self.inner.resume();
+        }
+
+        pub fn clear_inner(&self) {
+            self.inner.clear();
         }
 
         /// Add http proxy pool to combat PSN rate limiter. This is not required.
@@ -313,14 +342,14 @@ pub mod psn {
             proxies: Vec<(&str, Option<&str>, Option<&str>)>,
         ) -> Self {
             let mgr = ProxyPoolManager::new();
-            let size = proxies.len() as u8;
+            let size = proxies.len();
             mgr.add_proxy(proxies);
 
             let pool = Builder::new()
                 .always_check(false)
                 .idle_timeout(None)
                 .max_lifetime(None)
-                .min_idle(size)
+                .min_idle(0)
                 .max_size(size)
                 .build(mgr)
                 .await
@@ -388,7 +417,10 @@ pub mod psn {
             psn_inner.get_message_thread(&client, thread_id).await
         }
 
-        pub async fn generate_message_thread(&self, online_id: &str) -> Result<(), PSNError> {
+        pub async fn generate_message_thread<T: DeserializeOwned + 'static>(
+            &self,
+            online_id: &str,
+        ) -> Result<T, PSNError> {
             let (client, psn_inner) = self.get().await?;
 
             psn_inner.generate_message_thread(&client, online_id).await

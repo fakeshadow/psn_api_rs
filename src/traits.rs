@@ -56,13 +56,13 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
     /// A generic multipart/form-data post handle function.
     /// take in multipart boundary to produce a proper heaader.
-    fn post_by_multipart<'se, 'st: 'se>(
+    fn post_by_multipart<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
         client: &'se Self::Client,
         boundary: &'st str,
         url: &'st str,
         body: Vec<u8>,
-    ) -> PSNFuture<'se, Result<(), Self::Error>>;
+    ) -> PSNFuture<'se, Result<T, Self::Error>>;
 
     fn get_profile<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
@@ -125,11 +125,11 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
         })
     }
 
-    fn generate_message_thread<'se, 'st: 'se>(
+    fn generate_message_thread<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
         client: &'se Self::Client,
         online_id: &'st str,
-    ) -> PSNFuture<'se, Result<(), Self::Error>> {
+    ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let body = self
@@ -221,11 +221,6 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
                 result.extend_from_slice(b"Content-Disposition: form-data; name=\"imageData\"\r\n");
                 result.extend_from_slice(b"Content-Type: image/png\r\n");
-
-                //                result.extend_from_slice(
-                //                    "Content-Disposition: form-data; name=\"imageData\"\r\n".as_bytes(),
-                //                );
-                //                result.extend_from_slice("Content-Type: image/png\r\n".as_bytes());
 
                 result.extend_from_slice(
                     format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),

@@ -95,6 +95,15 @@ pub struct TrophyUser {
     pub earned_date: Option<String>,
 }
 
+///The response type of `generate_message_thread()`
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageThreadNew {
+    thread_id: String,
+    thread_modified_date: String,
+    blocked_by_members: bool,
+}
+
 ///The response type of `get_message_threads()`
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
