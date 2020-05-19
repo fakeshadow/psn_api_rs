@@ -99,9 +99,9 @@ pub struct TrophyUser {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageThreadNew {
-    thread_id: String,
-    thread_modified_date: String,
-    blocked_by_members: bool,
+    pub thread_id: String,
+    pub thread_modified_date: String,
+    pub blocked_by_members: bool,
 }
 
 ///The response type of `get_message_threads()`

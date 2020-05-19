@@ -75,6 +75,7 @@ pub mod psn {
     use serde::de::DeserializeOwned;
     use tang_rs::{Builder, Manager, ManagerFuture, Pool, PoolRef};
 
+    use crate::models::MessageThreadNew;
     use crate::traits::PSNRequest;
     use crate::types::PSNInner;
 
@@ -417,15 +418,6 @@ pub mod psn {
             psn_inner.get_message_thread(&client, thread_id).await
         }
 
-        pub async fn generate_message_thread<T: DeserializeOwned + 'static>(
-            &self,
-            online_id: &str,
-        ) -> Result<T, PSNError> {
-            let (client, psn_inner) = self.get().await?;
-
-            psn_inner.generate_message_thread(&client, online_id).await
-        }
-
         pub async fn leave_message_thread(&self, thread_id: &str) -> Result<(), PSNError> {
             let (client, psn_inner) = self.get().await?;
 
@@ -437,12 +429,15 @@ pub mod psn {
             online_id: &str,
             msg: Option<&str>,
             path: Option<&str>,
-            thread_id: &str,
         ) -> Result<(), PSNError> {
             let (client, psn_inner) = self.get().await?;
 
+            let thread: MessageThreadNew = psn_inner
+                .generate_message_thread(&client, online_id)
+                .await?;
+
             psn_inner
-                .send_message(&client, online_id, msg, path, thread_id)
+                .send_message(&client, online_id, msg, path, &thread.thread_id)
                 .await
         }
 
