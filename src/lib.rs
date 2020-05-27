@@ -441,6 +441,23 @@ pub mod psn {
                 .await
         }
 
+        pub async fn send_message_with_buf(
+            &self,
+            online_id: &str,
+            msg: Option<&str>,
+            buf: Option<&[u8]>,
+        ) -> Result<(), PSNError> {
+            let (client, psn_inner) = self.get().await?;
+
+            let thread: MessageThreadNew = psn_inner
+                .generate_message_thread(&client, online_id)
+                .await?;
+
+            psn_inner
+                .send_message_with_buf(&client, online_id, msg, buf, &thread.thread_id)
+                .await
+        }
+
         pub async fn search_store_items<T: DeserializeOwned + 'static>(
             &self,
             lang: &str,

@@ -237,9 +237,9 @@ pub struct StoreSearchData {
 // what a mess.
 pub struct StoreSearchAttribute {
     #[serde(alias = "badge-info")]
-    pub badge_info: BadgeInfo,
+    pub badge_info: Option<BadgeInfo>,
     #[serde(alias = "cero-z-status")]
-    pub ceroz_status: CeroZStatus,
+    pub ceroz_status: Option<CeroZStatus>,
     #[serde(alias = "content-rating")]
     pub content_rating: ContentRating,
     #[serde(alias = "content-type")]
@@ -288,14 +288,14 @@ pub struct StoreSearchAttribute {
     pub ps_vr_compatibility: String,
     #[serde(alias = "release-date")]
     pub release_date: String,
-    pub skus: Vec<Sku>,
+    pub skus: Option<Vec<Sku>>,
     #[serde(alias = "star-rating")]
     pub star_rating: StarRating,
     #[serde(alias = "subtitle-language-codes")]
     // ToDo: this field could be an option with other type
-    pub subtitle_language_codes: Vec<String>,
+    pub subtitle_language_codes: Vec<SubtitleLanguageCode>,
     #[serde(alias = "tertiary-classification")]
-    pub tertiary_classification: String,
+    pub tertiary_classification: Option<String>,
     #[serde(alias = "thumbnail-url-base")]
     pub thumbnail_url_base: String,
     #[serde(alias = "top-category")]
@@ -367,7 +367,7 @@ pub struct ContentInteractiveElement {
 #[serde(rename_all = "camelCase")]
 pub struct FileSize {
     pub unit: String,
-    pub value: f32,
+    pub value: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -469,8 +469,15 @@ pub struct StartEndDate {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StarRating {
-    pub score: f32,
-    pub total: u32,
+    pub score: Option<f32>,
+    pub total: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleLanguageCode {
+    pub codes: Vec<String>,
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

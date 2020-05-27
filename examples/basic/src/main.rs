@@ -63,7 +63,7 @@ async fn main() -> std::io::Result<()> {
 
     println!("\r\nGot examples trophy set info : \r\n{:#?}", set);
 
-    //get self message threads
+    // get self message threads
     let threads: MessageThreadsSummary = psn
         .get_message_threads(0)
         .await
@@ -71,7 +71,8 @@ async fn main() -> std::io::Result<()> {
 
     println!("\r\nGot examples threads info : \r\n{:#?}", threads);
 
-    //get the last message thread detail. if the account have at least one message thread.
+    // get the last message thread detail. if the account have at least one message thread.
+
     match threads.threads.first() {
         Some(t) => {
             let thread: MessageThread = psn
@@ -93,9 +94,9 @@ async fn main() -> std::io::Result<()> {
     // store apis don't need authentication.
     let psn_inner = PSNInner::new();
 
-    let psn_no_auth = PSN::new(vec![psn_inner]).await;
-    let search: StoreSearchResult = psn_no_auth
-        .search_store_items("en", "us", "20", "ace combat")
+    let psn = PSN::new(vec![psn_inner]).await;
+    let search: StoreSearchResult = psn
+        .search_store_items("en", "us", "20", "battlefield")
         .await
         .unwrap_or_else(|e| panic!("{:?}", e));
 

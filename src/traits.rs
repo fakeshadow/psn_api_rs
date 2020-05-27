@@ -153,26 +153,6 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
         })
     }
 
-    /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
-    /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message<'se, 'st: 'se>(
-        &'se self,
-        client: &'se Self::Client,
-        online_id: &'st str,
-        msg: Option<&'st str>,
-        path: Option<&'st str>,
-        thread_id: &'st str,
-    ) -> PSNFuture<'se, Result<(), Self::Error>> {
-        Box::pin(async move {
-            let boundary = Self::generate_boundary();
-            let url = self.send_message_encode(thread_id);
-            let body = self.multipart_body(&boundary, online_id, msg, path).await?;
-
-            self.post_by_multipart(client, boundary.as_str(), url.as_str(), body)
-                .await
-        })
-    }
-
     fn search_store_items<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
         client: &'se Self::Client,
@@ -187,6 +167,53 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
         })
     }
 
+    /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
+    /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
+    fn send_message<'se, 'st: 'se>(
+        &'se self,
+        client: &'se Self::Client,
+        online_id: &'st str,
+        msg: Option<&'st str>,
+        path: Option<&'st str>,
+        thread_id: &'st str,
+    ) -> PSNFuture<'se, Result<(), Self::Error>> {
+        Box::pin(async move {
+            let boundary = Self::generate_boundary();
+            let url = self.send_message_encode(thread_id);
+
+            let buf = match path {
+                Some(path) => Some(Self::read_path(path).await?),
+                None => None,
+            };
+
+            let body = self
+                .multipart_body(&boundary, online_id, msg, buf.as_deref())
+                .await?;
+
+            self.post_by_multipart(client, boundary.as_str(), url.as_str(), body)
+                .await
+        })
+    }
+
+    /// The same as send message and we pass `Option<&[u8]>` instead of file path.
+    fn send_message_with_buf<'se, 'st: 'se>(
+        &'se self,
+        client: &'se Self::Client,
+        online_id: &'st str,
+        msg: Option<&'st str>,
+        buf: Option<&'st [u8]>,
+        thread_id: &'st str,
+    ) -> PSNFuture<'se, Result<(), Self::Error>> {
+        Box::pin(async move {
+            let boundary = Self::generate_boundary();
+            let url = self.send_message_encode(thread_id);
+            let body = self.multipart_body(&boundary, online_id, msg, buf).await?;
+
+            self.post_by_multipart(client, boundary.as_str(), url.as_str(), body)
+                .await
+        })
+    }
+
     /// take `option<&str>` for `message` and `file path` to determine if the message is a text only or a image attached one.
     /// pass both as `None` will result in generating a new message thread body.
     fn multipart_body<'se, 'st: 'se>(
@@ -194,12 +221,12 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
         boundary: &'st str,
         online_id: &'st str,
         msg: Option<&'st str>,
-        path: Option<&'st str>,
+        buf: Option<&'st [u8]>,
     ) -> PSNFuture<'se, Result<Vec<u8>, Self::Error>> {
         Box::pin(async move {
             let mut result: Vec<u8> = Vec::new();
 
-            if msg.is_none() && path.is_none() {
+            if msg.is_none() && buf.is_none() {
                 let msg = serde_json::to_string(&GenerateNewThread::new(
                     online_id,
                     self.self_online_id(),
@@ -210,23 +237,20 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
                 return Ok(result);
             };
 
-            let event_category = if path.is_some() { 3u8 } else { 1 };
+            let event_category = if buf.is_some() { 3u8 } else { 1 };
             let msg = serde_json::to_string(&SendMessage::new(msg, event_category))
                 .unwrap_or_else(|_| "".to_owned());
 
             write_string(&mut result, boundary, "messageEventDetail", msg.as_str());
 
-            if let Some(path) = path {
-                let file_data = Self::read_path(path).await?;
-
+            if let Some(buf) = buf {
                 result.extend_from_slice(b"Content-Disposition: form-data; name=\"imageData\"\r\n");
                 result.extend_from_slice(b"Content-Type: image/png\r\n");
 
-                result.extend_from_slice(
-                    format!("Content-Length: {}\r\n\r\n", file_data.len()).as_bytes(),
-                );
+                result
+                    .extend_from_slice(format!("Content-Length: {}\r\n\r\n", buf.len()).as_bytes());
                 // ToDo: in case extend failed
-                result.extend_from_slice(&file_data);
+                result.extend_from_slice(&buf);
                 result.extend_from_slice(format!("\r\n--{}\r\n", boundary).as_bytes());
             }
 
