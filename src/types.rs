@@ -235,7 +235,7 @@ impl PSNRequest for PSNInner {
 
                 if res.status() != 200 {
                     let e = res.json::<PSNResponseError>().await?;
-                    Err(PSNError::FromPSN(e.error.message))
+                    Err(PSNError::FromPSN(e.error.message.into_boxed_str()))
                 } else {
                     let res = res.json().await?;
                     Ok(res)
@@ -264,7 +264,7 @@ impl PSNRequest for PSNInner {
 
             if res.status() != 204 {
                 let e = res.json::<PSNResponseError>().await?;
-                Err(PSNError::FromPSN(e.error.message))
+                Err(PSNError::FromPSN(e.error.message.into_boxed_str()))
             } else {
                 Ok(())
             }
@@ -300,7 +300,7 @@ impl PSNRequest for PSNInner {
 
                 if res.status() != 200 {
                     let e = res.json::<PSNResponseError>().await?;
-                    Err(PSNError::FromPSN(e.error.message))
+                    Err(PSNError::FromPSN(e.error.message.into_boxed_str()))
                 } else {
                     let res = res.json().await?;
                     Ok(res)

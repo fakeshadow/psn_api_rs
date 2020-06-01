@@ -69,11 +69,13 @@ mod private_model;
 pub mod psn {
     use std::future::Future;
     use std::sync::{Mutex, MutexGuard};
+    use std::time::Duration;
 
     use derive_more::Display;
     use reqwest::{Client, ClientBuilder, Error, Proxy};
     use serde::de::DeserializeOwned;
-    use tang_rs::{Builder, Manager, ManagerFuture, Pool, PoolRef};
+    use tang_rs::{Builder, Manager, ManagerFuture, ManagerTimeout, Pool, PoolRef};
+    use tokio::time::{delay_for, Delay};
 
     use crate::models::MessageThreadNew;
     use crate::traits::PSNRequest;
@@ -94,17 +96,23 @@ pub mod psn {
         #[display(fmt = "No PSNInner object is available")]
         NoPSNInner,
         #[display(fmt = "Failed to login in to PSN on npsso code: {}", _0)]
-        InvalidNpsso(String),
+        InvalidNpsso(Box<str>),
         #[display(fmt = "Failed to login in to PSN on refresh token: {}", _0)]
-        InvalidRefresh(String),
+        InvalidRefresh(Box<str>),
         #[display(fmt = "Request to PSN pool is timeout.")]
         TimeOut,
         #[display(fmt = "Error from Reqwest http client: {}", _0)]
         FromReqwest(Error),
         #[display(fmt = "Error from PSN response: {}", _0)]
-        FromPSN(String),
+        FromPSN(Box<str>),
         #[display(fmt = "Error from IO: {}", _0)]
         FromStd(std::io::Error),
+    }
+
+    impl From<()> for PSNError {
+        fn from(_: ()) -> Self {
+            PSNError::TimeOut
+        }
     }
 
     pub struct PSNInnerManager {
@@ -143,7 +151,8 @@ pub mod psn {
     impl Manager for PSNInnerManager {
         type Connection = PSNInner;
         type Error = PSNError;
-        type TimeoutError = PSNError;
+        type Timeout = Delay;
+        type TimeoutError = ();
 
         fn connect(&self) -> ManagerFuture<'_, Result<Self::Connection, Self::Error>> {
             Box::pin(async move { self.get_psn_inner().pop().ok_or(PSNError::NoClient) })
@@ -172,9 +181,18 @@ pub mod psn {
         {
             tokio::spawn(fut);
         }
+
+        fn timeout<Fut: Future>(
+            &self,
+            fut: Fut,
+            dur: Duration,
+        ) -> ManagerTimeout<Fut, Self::Timeout> {
+            ManagerTimeout::new(fut, delay_for(dur))
+        }
     }
 
     type Proxies = Mutex<Vec<(String, Option<String>, Option<String>)>>;
+
     pub struct ProxyPoolManager {
         proxies: Proxies,
         marker: &'static str,
@@ -204,7 +222,8 @@ pub mod psn {
     impl Manager for ProxyPoolManager {
         type Connection = Client;
         type Error = PSNError;
-        type TimeoutError = PSNError;
+        type Timeout = Delay;
+        type TimeoutError = ();
 
         fn connect(&self) -> ManagerFuture<'_, Result<Self::Connection, Self::Error>> {
             Box::pin(async move {
@@ -246,6 +265,14 @@ pub mod psn {
             Fut: Future<Output = ()> + Send + 'static,
         {
             tokio::spawn(fut);
+        }
+
+        fn timeout<Fut: Future>(
+            &self,
+            fut: Fut,
+            dur: Duration,
+        ) -> ManagerTimeout<Fut, Self::Timeout> {
+            ManagerTimeout::new(fut, delay_for(dur))
         }
     }
 
