@@ -1,3 +1,8 @@
+(Jun 1, 2020)
+----------------------
+### Add
+- Struct `MessageThreadResponse` as the return type of `PSNInner::send_message` and `PSNInner::send_message_with_buf`
+
 (May 8, 2020)
 ----------------------
 ### Break

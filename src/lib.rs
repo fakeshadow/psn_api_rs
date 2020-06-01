@@ -451,12 +451,12 @@ pub mod psn {
             psn_inner.leave_message_thread(&client, thread_id).await
         }
 
-        pub async fn send_message(
+        pub async fn send_message<T: DeserializeOwned + 'static>(
             &self,
             online_id: &str,
             msg: Option<&str>,
             path: Option<&str>,
-        ) -> Result<(), PSNError> {
+        ) -> Result<T, PSNError> {
             let (client, psn_inner) = self.get().await?;
 
             let thread: MessageThreadNew = psn_inner
@@ -468,12 +468,12 @@ pub mod psn {
                 .await
         }
 
-        pub async fn send_message_with_buf(
+        pub async fn send_message_with_buf<T: DeserializeOwned + 'static>(
             &self,
             online_id: &str,
             msg: Option<&str>,
             buf: Option<&[u8]>,
-        ) -> Result<(), PSNError> {
+        ) -> Result<T, PSNError> {
             let (client, psn_inner) = self.get().await?;
 
             let thread: MessageThreadNew = psn_inner

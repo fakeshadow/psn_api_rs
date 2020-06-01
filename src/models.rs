@@ -104,6 +104,15 @@ pub struct MessageThreadNew {
     pub blocked_by_members: bool,
 }
 
+///The response type of `send_message()` and `send_message_with_buf()`
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageThreadResponse {
+    pub thread_id: String,
+    pub thread_modified_date: String,
+    pub event_index: String,
+}
+
 ///The response type of `get_message_threads()`
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]

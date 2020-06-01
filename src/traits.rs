@@ -169,14 +169,14 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
 
     /// You can only send message to an existing message thread. So if you want to send to some online_id the first thing is generating a new message thread.
     /// Pass none if you don't want to send text or image file (Pass both as none will result in an error)
-    fn send_message<'se, 'st: 'se>(
+    fn send_message<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
         client: &'se Self::Client,
         online_id: &'st str,
         msg: Option<&'st str>,
         path: Option<&'st str>,
         thread_id: &'st str,
-    ) -> PSNFuture<'se, Result<(), Self::Error>> {
+    ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
@@ -196,17 +196,18 @@ pub trait PSNRequest: Sized + Send + Sync + EncodeUrl + 'static {
     }
 
     /// The same as send message and we pass `Option<&[u8]>` instead of file path.
-    fn send_message_with_buf<'se, 'st: 'se>(
+    fn send_message_with_buf<'se, 'st: 'se, T: DeserializeOwned + 'static>(
         &'se self,
         client: &'se Self::Client,
         online_id: &'st str,
         msg: Option<&'st str>,
         buf: Option<&'st [u8]>,
         thread_id: &'st str,
-    ) -> PSNFuture<'se, Result<(), Self::Error>> {
+    ) -> PSNFuture<'se, Result<T, Self::Error>> {
         Box::pin(async move {
             let boundary = Self::generate_boundary();
             let url = self.send_message_encode(thread_id);
+
             let body = self.multipart_body(&boundary, online_id, msg, buf).await?;
 
             self.post_by_multipart(client, boundary.as_str(), url.as_str(), body)
